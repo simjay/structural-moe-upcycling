@@ -122,14 +122,12 @@ class PrimeIntellectClient:
         requested_image = image or self.config.image
         available_images = offer.get("images", [])
         if available_images and requested_image not in available_images:
-            resolved_image = available_images[0]
-            logger.warning(
-                "Image %r not available for this offer; using %r instead",
-                requested_image,
-                resolved_image,
+            raise ValueError(
+                f"Image '{requested_image}' is not available for offer "
+                f"'{offer['cloudId']}' on {offer['provider']}. "
+                f"Available images: {available_images}. "
+                f"Run 'make list-offers' to see all options."
             )
-        else:
-            resolved_image = requested_image
 
         pod_def: dict[str, Any] = {
             "name": name,
@@ -137,7 +135,7 @@ class PrimeIntellectClient:
             "gpuType": offer["gpuType"],
             "socket": offer["socket"],
             "gpuCount": offer.get("gpuCount", self.config.gpu_count),
-            "image": resolved_image,
+            "image": requested_image,
             "security": offer.get("security", "secure_cloud"),
         }
         if offer.get("dataCenter"):
@@ -161,7 +159,7 @@ class PrimeIntellectClient:
             name,
             offer["provider"],
             offer.get("dataCenter", "?"),
-            resolved_image,
+            requested_image,
         )
         resp = self._session.post(f"{BASE_URL}/pods/", json=body)
         if not resp.ok:
@@ -189,16 +187,18 @@ class PrimeIntellectClient:
         timeout: float = 600,
         poll_interval: float = 15,
     ) -> dict:
-        """Block until the pod is RUNNING with SSH available."""
+        """Block until the pod is ready with SSH available."""
+        ready_states = {"RUNNING", "ACTIVE"}
+        terminal_states = {"FAILED", "TERMINATED"}
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             pod = self.get_pod(pod_id)
             status = pod.get("status", "")
             ssh = pod.get("sshConnection") or pod.get("ip")
             logger.info("Pod %s: status=%s ssh=%s", pod_id[:12], status, bool(ssh))
-            if status == "RUNNING" and ssh:
+            if status in ready_states and ssh:
                 return pod
-            if status in ("FAILED", "TERMINATED"):
+            if status in terminal_states:
                 raise RuntimeError(
                     f"Pod {pod_id} entered terminal state: {status}"
                 )

@@ -78,23 +78,34 @@ class JobOrchestrator:
         """Run one experiment end-to-end. Returns local results directory."""
         pod_id: str | None = None
         try:
-            # 1. Find cheapest GPU
+            # 1. Find available GPUs
             offers = self.client.check_availability()
             if not offers:
                 raise RuntimeError(
                     f"No GPUs available matching {self.config.gpu_type} "
                     f"in {self.config.regions}"
                 )
-            offer = offers[0]
-            logger.info(
-                "Selected offer: %s on %s @ $%.2f/hr",
-                offer["cloudId"],
-                offer["provider"],
-                offer["prices"]["onDemand"],
-            )
 
-            # 2. Provision
-            pod = self.client.provision(offer, name=exp.name)
+            # 2. Try offers in order (cheapest first) until one provisions
+            pod = None
+            for i, offer in enumerate(offers):
+                logger.info(
+                    "Trying offer %d/%d: %s on %s @ $%.2f/hr",
+                    i + 1,
+                    len(offers),
+                    offer["cloudId"],
+                    offer["provider"],
+                    offer["prices"]["onDemand"],
+                )
+                try:
+                    pod = self.client.provision(offer, name=exp.name)
+                    break
+                except Exception:
+                    logger.warning(
+                        "Offer %s failed, trying next...", offer["cloudId"]
+                    )
+            if pod is None:
+                raise RuntimeError("All available offers failed to provision")
             pod_id = pod["id"]
             self._active_pods.append(pod_id)
 
