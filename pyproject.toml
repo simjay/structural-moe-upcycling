@@ -1,0 +1,26 @@
+[project]
+name = "structural-moe-upcycling"
+version = "0.1.0"
+description = "Dense-to-MoE upcycling with structure-preserving residual initialization"
+requires-python = ">=3.10"
+dependencies = [
+    "requests",
+    "python-dotenv",
+    "paramiko",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+train = [
+    "torch",
+    "transformers>=4.40",
+    "unsloth",
+    "datasets",
+]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["src*", "experiment*"]
