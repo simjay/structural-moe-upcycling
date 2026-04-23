@@ -10,16 +10,18 @@ replacing FFN layers with routed experts plus a shared expert. For each weight
 matrix W:
 
 1. Compute SVD: W = U Σ Vᵀ
-2. Split: Σ = Σ\_struct (top-k) + Σ\_res (remainder)
-3. Per expert: W\_e = U (Σ\_struct + Σ̃\_res,e) Vᵀ, where Σ̃\_res,e is sampled
-   around Σ\_res with variance scaled by singular value magnitude
+2. Split: Σ = Σstruct (top-k) + Σres (remainder)
+3. Per expert: We = U (Σstruct + Σ̃res,e) Vᵀ, where Σ̃res,e is sampled
+  around Σres with variance scaled by singular value magnitude
 
 ## Models
 
-| Role | Model | Details |
-|------|-------|---------|
-| Dense parent | `Qwen/Qwen1.5-1.8B` | 24 layers, hidden 2048, intermediate 5504 |
-| MoE target | `Qwen/Qwen1.5-MoE-A2.7B` config | 60 experts, 4 active, expert intermediate 1408 |
+
+| Role         | Model                           | Details                                        |
+| ------------ | ------------------------------- | ---------------------------------------------- |
+| Dense parent | `Qwen/Qwen1.5-1.8B`             | 24 layers, hidden 2048, intermediate 5504      |
+| MoE target   | `Qwen/Qwen1.5-MoE-A2.7B` config | 60 experts, 4 active, expert intermediate 1408 |
+
 
 ## Experimental settings
 
@@ -34,7 +36,7 @@ matrix W:
 ## Infrastructure
 
 We use [Prime Intellect](https://app.primeintellect.ai) for GPU compute,
-managed via the official [`prime` CLI](https://github.com/PrimeIntellect-ai/prime).
+managed via the official `[prime` CLI](https://github.com/PrimeIntellect-ai/prime).
 
 ### Prerequisites
 
@@ -78,7 +80,7 @@ prime pods ssh <pod-id>
 
 # On the pod:
 nvidia-smi
-git clone <repo-url>
+git clone https://github.com/simjay/structural-moe-upcycling.git
 cd structural-moe-upcycling
 bash setup.sh
 python tests/test_inference.py
@@ -93,3 +95,4 @@ prime pods terminate <pod-id>
 - Horoi et al., "Less is More: Undertraining Experts Improves Model Upcycling", 2025
 - Hui et al., "Upcycling Instruction Tuning from Dense to Mixture-of-Experts via Parameter Merging", 2025
 - Liew et al., "Scaling Laws for Upcycling Mixture-of-Experts Language Models", 2025
+
