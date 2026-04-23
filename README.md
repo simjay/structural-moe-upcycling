@@ -72,15 +72,18 @@ prime pods terminate <pod-id>
 ### Sanity check
 
 ```bash
-# Provision a pod
+# Provision a pod and SSH in
 prime pods create
-
-# SSH in and verify GPU access
 prime pods ssh <pod-id>
-nvidia-smi
-exit
 
-# Tear down
+# On the pod:
+nvidia-smi
+git clone <repo-url>
+cd structural-moe-upcycling
+bash setup.sh
+python tests/test_inference.py
+
+# Back on local machine:
 prime pods terminate <pod-id>
 ```
 
