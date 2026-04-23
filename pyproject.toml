@@ -11,6 +11,8 @@ train = [
     "transformers>=4.40",
     "unsloth",
     "datasets",
+    "wandb",
+    "scipy",
 ]
 
 [build-system]

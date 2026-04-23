@@ -83,7 +83,7 @@ nvidia-smi
 git clone https://github.com/simjay/structural-moe-upcycling.git
 cd structural-moe-upcycling
 bash setup.sh
-python tests/test_inference.py
+python3 tests/test_inference.py
 
 # Back on local machine:
 prime pods terminate <pod-id>
