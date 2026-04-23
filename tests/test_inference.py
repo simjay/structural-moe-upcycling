@@ -1,16 +1,14 @@
-"""Sanity check: load Qwen1.5-1.8B and generate a few tokens."""
+"""Sanity check: load Qwen1.5-1.8B via Unsloth and generate a few tokens."""
 
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from unsloth import FastModel
 
 MODEL = "Qwen/Qwen1.5-1.8B"
+MAX_SEQ_LENGTH = 2048
 
-tokenizer = AutoTokenizer.from_pretrained(MODEL, trust_remote_code=True)
-model = AutoModelForCausalLM.from_pretrained(
-    MODEL,
-    torch_dtype=torch.bfloat16,
-    device_map="auto",
-    trust_remote_code=True,
+model, tokenizer = FastModel.from_pretrained(
+    model_name=MODEL,
+    max_seq_length=MAX_SEQ_LENGTH,
+    load_in_4bit=False,
 )
 
 inputs = tokenizer("Hello, my name is", return_tensors="pt").to(model.device)
