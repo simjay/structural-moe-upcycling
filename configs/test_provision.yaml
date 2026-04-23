@@ -1,7 +1,0 @@
-experiments:
-  - name: test-provision
-    remote_workdir: /root/workspace
-    setup_commands: []
-    train_command: "nvidia-smi"
-    upload_paths: []
-    download_paths: []

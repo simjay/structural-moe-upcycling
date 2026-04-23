@@ -1,110 +1,87 @@
 # Structure-Preserving Residual Initialization for Dense-to-MoE Upcycling
 
-Dense-to-MoE upcycling for **Qwen1.5-1.8B → Qwen1.5-MoE-A2.7B**, comparing direct copy, Gaussian perturbation, and SVD residual initialization.
+Dense-to-MoE upcycling for **Qwen1.5-1.8B → Qwen1.5-MoE-A2.7B**, comparing
+direct copy, Gaussian perturbation, and SVD residual initialization.
 
 ## Method
 
 We convert a pretrained dense model into a Mixture-of-Experts architecture by
-replacing FFN layers with routed experts plus a shared expert. The core idea is
-to decompose each dense FFN weight matrix via SVD into a dominant structure
-component and a residual, then generate expert-specific weights by sampling only
-in the residual space. This preserves the pretrained behavior in the top-k
-singular directions while introducing controlled diversity where it matters
-least.
-
-For each weight matrix W:
+replacing FFN layers with routed experts plus a shared expert. For each weight
+matrix W:
 
 1. Compute SVD: W = U Σ Vᵀ
-2. Split: Σ = Σ_struct (top-k) + Σ_res (remainder)
-3. Per expert: W_e = U (Σ_struct + Σ̃_res,e) Vᵀ, where Σ̃_res,e is sampled
-   around Σ_res with variance scaled by singular value magnitude
+2. Split: Σ = Σ\_struct (top-k) + Σ\_res (remainder)
+3. Per expert: W\_e = U (Σ\_struct + Σ̃\_res,e) Vᵀ, where Σ̃\_res,e is sampled
+   around Σ\_res with variance scaled by singular value magnitude
 
 ## Models
 
 | Role | Model | Details |
 |------|-------|---------|
-| Dense parent | `Qwen/Qwen1.5-1.8B` | 24 layers, hidden size 2048, intermediate 5504 |
-| MoE target | `Qwen/Qwen1.5-MoE-A2.7B` config | 60 experts, 4 active per token, expert intermediate 1408, shared expert intermediate 5632 |
+| Dense parent | `Qwen/Qwen1.5-1.8B` | 24 layers, hidden 2048, intermediate 5504 |
+| MoE target | `Qwen/Qwen1.5-MoE-A2.7B` config | 60 experts, 4 active, expert intermediate 1408 |
 
-The MoE target is instantiated as a **fresh config** (not the pretrained MoE
-checkpoint) so the experiment isolates the effect of initialization strategy.
+## Experimental settings
+
+1. **Direct copy** — all experts initialized as exact copies of the dense FFN
+2. **Gaussian perturbation** — copies + i.i.d. Gaussian noise
+3. **SVD residual** — structure-preserving initialization described above
 
 ## Dataset
 
 **OpenMathReasoning** (NVIDIA): supervised fine-tuning on math reasoning.
 
-## Training
+## Infrastructure
 
-- **Framework**: Unsloth + Transformers v5, PyTorch, bf16
-- **Method**: LoRA on expert FFN layers (gate, up, down projections)
-- **LoRA config**: rank 32, alpha 64, dropout 0.05
-- **Context length**: 2048 (1024 for sanity runs)
-- **Router**: frozen for first 5% of steps, then unfrozen
-
-## Evaluation
-
-- **Preservation**: validation loss at step 0 (before fine-tuning)
-- **Convergence**: validation loss vs. step, area under early learning curve
-- **Specialization**: routing entropy, expert load balance, pairwise cosine similarity of expert weights
-
----
-
-## Setup
+We use [Prime Intellect](https://app.primeintellect.ai) for GPU compute,
+managed via the official [`prime` CLI](https://github.com/PrimeIntellect-ai/prime).
 
 ### Prerequisites
 
-- Python 3.10+
-- A [Prime Intellect](https://app.primeintellect.ai) account with an API key
-  and a registered SSH key
+- Python 3.10–3.13
+- A Prime Intellect account with API key and registered SSH key
 
-### Installation
+### Setup
 
 ```bash
-git clone <repo-url>
-cd structural-moe-upcycling
-make setup
+pip install prime
+prime config set-api-key
+prime config set-ssh-key-path
 ```
 
-### Configuration
+### Usage
 
 ```bash
-cp .env.example .env
+# See available GPUs
+prime availability list
+prime availability list --gpu-type A100_80GB
+
+# Provision a pod (interactive)
+prime pods create
+
+# List your pods
+prime pods list
+
+# SSH into a pod
+prime pods ssh <pod-id>
+
+# Terminate a pod
+prime pods terminate <pod-id>
 ```
 
-Edit `.env` and set `PRIME_INTELLECT_API_KEY`. The other variables have defaults
-but you should verify `PI_IMAGE` matches what's available — run `make list-offers`
-to check.
-
-## Usage
-
-### Discovery
+### Sanity check
 
 ```bash
-make list-offers    # show available GPUs, prices, and supported images
-make list-images    # show just the image names
-make list-pods      # show your active pods
-```
+# Provision a pod
+prime pods create
 
-### Running remote tests
+# SSH in and verify GPU access
+prime pods ssh <pod-id>
+nvidia-smi
+exit
 
-```bash
-make test-provision    # provision a GPU, run nvidia-smi, tear down
-make test-inference    # provision, install PyTorch/transformers, load Qwen1.5-1.8B, generate a few tokens
-```
-
-The inference test installs PyTorch and transformers on the pod, downloads
-Qwen1.5-1.8B from Hugging Face (~3.6GB), and generates a few tokens.
-
-To run any config directly:
-
-```bash
-venv/bin/python -m experiment.primeintellect --config configs/<your-config>.yaml -v
-```
-
-### Emergency teardown
-
-```bash
-make kill-pod POD_ID=<id>
+# Tear down
+prime pods terminate <pod-id>
 ```
 
 ## References
