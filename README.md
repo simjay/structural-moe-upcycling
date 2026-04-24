@@ -23,11 +23,52 @@ matrix W:
 | MoE target   | `Qwen/Qwen1.5-MoE-A2.7B` config | 60 experts, 4 active, expert intermediate 1408 |
 
 
+## Upcycling setup
+
+Each of the 24 dense transformer layers has a single FFN (`gate_proj`, `up_proj`,
+`down_proj` with intermediate size 5504).  We replace every FFN with an MoE block:
+
+```
+x (2048) ───┬── shared expert (2048 → 5504 → 2048)  ← exact copy of dense FFN
+            │
+            ├── router (2048 → 60 scores) → pick top-4
+            │     ├── expert i  (2048 → 1408 → 2048) × weight_i
+            │     ├── expert j  (2048 → 1408 → 2048) × weight_j
+            │     ├── expert k  (2048 → 1408 → 2048) × weight_k
+            │     └── expert l  (2048 → 1408 → 2048) × weight_l
+            │
+            └── ADD all outputs → (2048)
+```
+
+**What stays the same:** embeddings, attention (Q/K/V/O), layer norms. These are copied directly
+(dimensions are identical in dense and MoE).
+
+**Dimension adjustment:** the reference Qwen1.5-MoE-A2.7B config uses
+`shared_expert_intermediate_size = 5632` and `moe_intermediate_size = 1408`, but the
+dense FFN has `intermediate_size = 5504`.  Neither matches exactly.  We override the
+shared expert to 5504 so the dense FFN weights can be copied without padding or
+truncation.  For the 60 routing experts (1408 each), the dense FFN (5504 rows) is
+partitioned into 4 non-overlapping row-slices: three of 1408 rows and one of 1280 rows
+(zero-padded to 1408).  This follows Qwen's "fine-grained expert" approach of splitting
+rather than shrinking the FFN.
+
+**Shared expert:** exact copy of the dense FFN (same 5504 intermediate size).  Preserves
+the original model's behavior.
+
+**Router + shared expert gate:** randomly initialized (no dense counterpart exists).
+
+**60 routing experts:** the shared expert and router are held constant across experiments;
+only the expert initialization varies.
+
 ## Experimental settings
 
-1. **Direct copy** — all experts initialized as exact copies of the dense FFN
-2. **Gaussian perturbation** — copies + i.i.d. Gaussian noise
-3. **SVD residual** — structure-preserving initialization described above
+1. **Direct copy**: partition the dense FFN into 4 row-slices of 1376/1408 rows,
+   replicate 15× to fill 60 experts (all copies identical)
+2. **Gaussian perturbation**: same partition + i.i.d. Gaussian noise per copy
+3. **SVD residual**: structure-preserving initialization described above
+
+All three are trained under identical conditions on OpenMathReasoning and compared
+on convergence speed and final loss.
 
 ## Dataset
 
@@ -36,7 +77,7 @@ matrix W:
 ## Infrastructure
 
 We use [Prime Intellect](https://app.primeintellect.ai) for GPU compute,
-managed via the official `[prime` CLI](https://github.com/PrimeIntellect-ai/prime).
+managed via the official [prime CLI](https://github.com/PrimeIntellect-ai/prime).
 
 ### Prerequisites
 
@@ -71,7 +112,7 @@ prime pods ssh <pod-id>
 prime pods terminate <pod-id>
 ```
 
-### Sanity check
+### Sanity checks
 
 ```bash
 # Provision a pod and SSH in
@@ -83,11 +124,23 @@ nvidia-smi
 git clone https://github.com/simjay/structural-moe-upcycling.git
 cd structural-moe-upcycling
 bash setup.sh
+
+# Run tests in order:
 python3 tests/test_inference.py
+python3 tests/test_data.py
+python3 tests/test_upcycle.py
+python3 tests/test_train.py
 
 # Back on local machine:
 prime pods terminate <pod-id>
 ```
+
+| Script | What it tests | Time |
+| --- | --- | --- |
+| `test_inference.py` | Load Qwen1.5-1.8B via Unsloth and generate tokens, confirms GPU, CUDA, and model loading work | ~30 s |
+| `test_data.py` | Stream and inspect samples from `nvidia/OpenMathReasoning`, confirms dataset access and the `datasets` library | ~10 s |
+| `test_upcycle.py` | Convert dense Qwen1.5-1.8B → MoE (14.3B params): exact-copy shared expert (5504), partition dense FFN into 4 row-slices and replicate 15× for 60 experts, run inference | ~3 min |
+| `test_train.py` | Apply LoRA to the dense model and run 10 SFT steps on a synthetic math dataset, confirms the full training loop (forward, loss, backward, optimizer) | ~1 min |
 
 ## References
 
