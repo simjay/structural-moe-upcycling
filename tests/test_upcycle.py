@@ -31,7 +31,7 @@ def main():
 
     print("\nLoading dense model...")
     dense = AutoModelForCausalLM.from_pretrained(
-        DENSE_MODEL, torch_dtype=torch.bfloat16, device_map="cpu"
+        DENSE_MODEL, dtype=torch.bfloat16, device_map="cpu"
     )
     tokenizer = AutoTokenizer.from_pretrained(DENSE_MODEL)
 
@@ -78,9 +78,10 @@ def main():
             se.up_proj.weight.copy_(dl.mlp.up_proj.weight)
             se.down_proj.weight.copy_(dl.mlp.down_proj.weight)
 
-            # Routing experts: partition dense FFN into row-slices, replicate
-            # transformers >=5.x uses fused Qwen2MoeExperts with 3D weight
-            # tensors of shape (num_experts, ...) instead of a ModuleList
+            # Routing experts: partition dense FFN into row-slices, replicate.
+            # transformers >=5.x fuses gate_proj and up_proj into one tensor:
+            #   gate_up_proj: (num_experts, 2*expert_dim, hidden_dim)
+            #   down_proj:    (num_experts, hidden_dim, expert_dim)
             experts = ml.mlp.experts
             for e in range(n_experts):
                 chunk_idx = e % n_chunks
@@ -88,17 +89,17 @@ def main():
                 row_end = min(row_start + expert_dim, dense_dim)
                 actual_rows = row_end - row_start
 
-                experts.gate_proj.weight[e, :actual_rows].copy_(
+                experts.gate_up_proj[e, :actual_rows].copy_(
                     dl.mlp.gate_proj.weight[row_start:row_end])
-                experts.up_proj.weight[e, :actual_rows].copy_(
+                experts.gate_up_proj[e, expert_dim:expert_dim + actual_rows].copy_(
                     dl.mlp.up_proj.weight[row_start:row_end])
-                experts.down_proj.weight[e, :, :actual_rows].copy_(
+                experts.down_proj[e, :, :actual_rows].copy_(
                     dl.mlp.down_proj.weight[:, row_start:row_end])
 
                 if actual_rows < expert_dim:
-                    experts.gate_proj.weight[e, actual_rows:].zero_()
-                    experts.up_proj.weight[e, actual_rows:].zero_()
-                    experts.down_proj.weight[e, :, actual_rows:].zero_()
+                    experts.gate_up_proj[e, actual_rows:expert_dim].zero_()
+                    experts.gate_up_proj[e, expert_dim + actual_rows:].zero_()
+                    experts.down_proj[e, :, actual_rows:].zero_()
 
     del dense
     torch.cuda.empty_cache()
