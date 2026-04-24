@@ -5,7 +5,7 @@ from datasets import load_dataset
 DATASET = "nvidia/OpenMathReasoning"
 
 print(f"Loading {DATASET} (streaming)...")
-ds = load_dataset(DATASET, split="train", streaming=True)
+ds = load_dataset(DATASET, split="cot", streaming=True)
 
 print("\nFirst 3 samples:\n")
 for i, sample in enumerate(ds):

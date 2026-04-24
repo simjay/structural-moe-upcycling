@@ -79,25 +79,26 @@ def main():
             se.down_proj.weight.copy_(dl.mlp.down_proj.weight)
 
             # Routing experts: partition dense FFN into row-slices, replicate
+            # transformers >=5.x uses fused Qwen2MoeExperts with 3D weight
+            # tensors of shape (num_experts, ...) instead of a ModuleList
+            experts = ml.mlp.experts
             for e in range(n_experts):
                 chunk_idx = e % n_chunks
                 row_start = chunk_idx * expert_dim
                 row_end = min(row_start + expert_dim, dense_dim)
-                actual_rows = row_end - row_start  # 1408 for chunks 0-2, 1280 for chunk 3
+                actual_rows = row_end - row_start
 
-                exp = ml.mlp.experts[e]
-                exp.gate_proj.weight[:actual_rows].copy_(
+                experts.gate_proj.weight[e, :actual_rows].copy_(
                     dl.mlp.gate_proj.weight[row_start:row_end])
-                exp.up_proj.weight[:actual_rows].copy_(
+                experts.up_proj.weight[e, :actual_rows].copy_(
                     dl.mlp.up_proj.weight[row_start:row_end])
-                exp.down_proj.weight[:, :actual_rows].copy_(
+                experts.down_proj.weight[e, :, :actual_rows].copy_(
                     dl.mlp.down_proj.weight[:, row_start:row_end])
 
-                # Zero-pad remainder for the last chunk (1280 < 1408)
                 if actual_rows < expert_dim:
-                    exp.gate_proj.weight[actual_rows:].zero_()
-                    exp.up_proj.weight[actual_rows:].zero_()
-                    exp.down_proj.weight[:, actual_rows:].zero_()
+                    experts.gate_proj.weight[e, actual_rows:].zero_()
+                    experts.up_proj.weight[e, actual_rows:].zero_()
+                    experts.down_proj.weight[e, :, actual_rows:].zero_()
 
     del dense
     torch.cuda.empty_cache()
