@@ -142,6 +142,71 @@ prime pods terminate <pod-id>
 | `test_upcycle.py` | Convert dense Qwen1.5-1.8B → MoE (14.3B params): exact-copy shared expert (5504), partition dense FFN into 4 row-slices and replicate 15× for 60 experts, run inference | ~3 min |
 | `test_train.py` | Apply LoRA to the dense model and run 10 SFT steps on a synthetic math dataset, confirms the full training loop (forward, loss, backward, optimizer) | ~1 min |
 
+## Running the experiment
+
+### 1. Upcycle (create three MoE checkpoints)
+
+```bash
+# Direct copy (partition + replicate, ~3 min on CPU)
+python -m src.upcycle --method direct --output /tmp/moe-direct
+
+# Gaussian perturbation (partition + replicate + noise)
+python -m src.upcycle --method gaussian --sigma 0.01 --output /tmp/moe-gaussian
+
+# SVD residual (structural/residual split, ~15 min on CPU)
+python -m src.upcycle --method svd --k 256 --output /tmp/moe-svd
+```
+
+Each command loads the dense Qwen1.5-1.8B, builds a 14.3B-parameter MoE model,
+and saves it to disk (~28 GB per checkpoint).
+
+### 2. Train (fine-tune each checkpoint)
+
+```bash
+python -m src.train --model /tmp/moe-direct   --run-name direct   --max-steps 2000
+python -m src.train --model /tmp/moe-gaussian  --run-name gaussian --max-steps 2000
+python -m src.train --model /tmp/moe-svd       --run-name svd      --max-steps 2000
+```
+
+Training uses LoRA (rank 16) on attention + shared expert, with the
+OpenMathReasoning `cot` split.  Loss curves are logged to wandb for side-by-side
+comparison.  Expected time: ~3–4 hours per run on a single A100-80GB.
+
+Key hyperparameters (held constant across runs):
+
+| Parameter | Value |
+| --- | --- |
+| LoRA rank | 16 |
+| Batch size | 2 (× 4 gradient accumulation = effective 8) |
+| Learning rate | 2e-4, cosine schedule, 100 warmup steps |
+| Sequence length | 2048 |
+| Precision | bf16 |
+| Gradient checkpointing | enabled |
+
+### 3. Compare
+
+Open wandb and compare the three runs (`direct`, `gaussian`, `svd`) on:
+- Training loss convergence speed
+- Final training loss at step 2000
+
+### Project structure
+
+```
+structural-moe-upcycling/
+├── src/
+│   ├── __init__.py
+│   ├── upcycle.py      # 3 init methods + shared weight-copying
+│   └── train.py        # LoRA SFT with wandb logging
+├── tests/
+│   ├── test_inference.py
+│   ├── test_data.py
+│   ├── test_upcycle.py
+│   └── test_train.py
+├── setup.sh
+├── pyproject.toml
+└── README.md
+```
+
 ## References
 
 - Komatsuzaki et al., "Sparse Upcycling: Training Mixture-of-Experts from Dense Checkpoints", 2023
