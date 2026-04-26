@@ -148,13 +148,13 @@ prime pods terminate <pod-id>
 
 ```bash
 # Direct copy (partition + replicate, ~3 min on CPU)
-python -m src.upcycle --method direct --output /tmp/moe-direct
+python3 -m src.upcycle --method direct --output /tmp/moe-direct
 
 # Gaussian perturbation (partition + replicate + noise)
-python -m src.upcycle --method gaussian --sigma 0.01 --output /tmp/moe-gaussian
+python3 -m src.upcycle --method gaussian --sigma 0.01 --output /tmp/moe-gaussian
 
 # SVD residual (structural/residual split, ~15 min on CPU)
-python -m src.upcycle --method svd --k 256 --output /tmp/moe-svd
+python3 -m src.upcycle --method svd --k 256 --output /tmp/moe-svd
 ```
 
 Each command loads the dense Qwen1.5-1.8B, builds a 14.3B-parameter MoE model,
@@ -163,9 +163,9 @@ and saves it to disk (~28 GB per checkpoint).
 ### 2. Train (fine-tune each checkpoint)
 
 ```bash
-python -m src.train --model /tmp/moe-direct   --run-name direct   --max-steps 2000
-python -m src.train --model /tmp/moe-gaussian  --run-name gaussian --max-steps 2000
-python -m src.train --model /tmp/moe-svd       --run-name svd      --max-steps 2000
+python3 -m src.train --model /tmp/moe-direct    --run-name direct   --max-steps 2000
+python3 -m src.train --model /tmp/moe-gaussian  --run-name gaussian --max-steps 2000
+python3 -m src.train --model /tmp/moe-svd       --run-name svd      --max-steps 2000
 ```
 
 Training uses LoRA (rank 16) on attention + shared expert, with the

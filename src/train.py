@@ -97,7 +97,7 @@ def main():
         gradient_checkpointing_kwargs={"use_reentrant": False},
         report_to=report_to,
         dataset_text_field="text",
-        max_seq_length=args.seq_len,
+        max_length=args.seq_len,
         packing=True,
     )
 
