@@ -11,7 +11,6 @@ Example:
 """
 
 import argparse
-import sys
 
 import torch
 from datasets import load_dataset
@@ -103,7 +102,7 @@ def main():
 
     trainer = SFTTrainer(
         model=model,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         train_dataset=ds,
         args=training_args,
     )
