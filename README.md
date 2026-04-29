@@ -11,7 +11,7 @@ residual initialization across two model pairs:
 | Experiment | Dense model | MoE target | Scale | Shared expert | Hardware |
 | --- | --- | --- | --- | --- | --- |
 | Qwen1.5 | `Qwen/Qwen1.5-1.8B` | `Qwen/Qwen1.5-MoE-A2.7B` | 1.8B → 14.3B | yes (5504) | 1x A100-80GB |
-| Mixtral | `mistralai/Mistral-7B-v0.3` | `mistralai/Mixtral-8x7B-v0.1` | 7B → 47B | none | 4x H100-80GB |
+| Mixtral | `mistralai/Mistral-7B-v0.1` | `mistralai/Mixtral-8x7B-v0.1` | 7B → 47B | none | 4x H100-80GB |
 
 See each experiment's README for architecture details and CLI commands:
 - [`src/qwen15/README.md`](src/qwen15/README.md)
@@ -119,9 +119,9 @@ python3 -m src.qwen15.upcycle --method gaussian  --sigma 0.01 --output /tmp/qwen
 python3 -m src.qwen15.upcycle --method svd       --k 256 --output /tmp/qwen-moe-svd
 
 # Train
-python3 -m src.qwen15.train --model /tmp/qwen-moe-direct   --run-name qwen-direct   --max-steps 2000
-python3 -m src.qwen15.train --model /tmp/qwen-moe-gaussian  --run-name qwen-gaussian --max-steps 2000
-python3 -m src.qwen15.train --model /tmp/qwen-moe-svd       --run-name qwen-svd      --max-steps 2000
+python3 -m src.qwen15.train --model /tmp/qwen-moe-direct   --run-name qwen-direct   --max-steps 500
+python3 -m src.qwen15.train --model /tmp/qwen-moe-gaussian  --run-name qwen-gaussian --max-steps 500
+python3 -m src.qwen15.train --model /tmp/qwen-moe-svd       --run-name qwen-svd      --max-steps 500
 ```
 
 ### Mixtral (large-scale)
@@ -133,9 +133,9 @@ python3 -m src.mixtral.upcycle --method gaussian  --sigma 0.01 --output /tmp/mix
 python3 -m src.mixtral.upcycle --method svd       --k 256 --output /tmp/mixtral-svd
 
 # Train (on 4x H100-80GB)
-python3 -m src.mixtral.train --model /tmp/mixtral-direct    --run-name mixtral-direct   --max-steps 2000
-python3 -m src.mixtral.train --model /tmp/mixtral-gaussian  --run-name mixtral-gaussian --max-steps 2000
-python3 -m src.mixtral.train --model /tmp/mixtral-svd       --run-name mixtral-svd      --max-steps 2000
+python3 -m src.mixtral.train --model /tmp/mixtral-direct    --run-name mixtral-direct   --max-steps 500
+python3 -m src.mixtral.train --model /tmp/mixtral-gaussian  --run-name mixtral-gaussian --max-steps 500
+python3 -m src.mixtral.train --model /tmp/mixtral-svd       --run-name mixtral-svd      --max-steps 500
 ```
 
 ### Hyperparameters (held constant across all runs)
@@ -154,7 +154,7 @@ python3 -m src.mixtral.train --model /tmp/mixtral-svd       --run-name mixtral-s
 
 Open wandb and compare the six runs on:
 - Training loss convergence speed
-- Final training loss at step 2000
+- Final training loss at step 500
 - Cross-scale consistency (does the same init method win at both scales?)
 
 ### Project structure

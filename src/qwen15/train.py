@@ -38,7 +38,7 @@ def main():
     parser = argparse.ArgumentParser(description="Fine-tune upcycled MoE model")
     parser.add_argument("--model", required=True, help="Path to upcycled model")
     parser.add_argument("--run-name", default="moe-train", help="wandb run name")
-    parser.add_argument("--max-steps", type=int, default=2000)
+    parser.add_argument("--max-steps", type=int, default=500)
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--seq-len", type=int, default=2048)

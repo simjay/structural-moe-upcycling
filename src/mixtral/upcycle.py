@@ -19,7 +19,7 @@ import argparse
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 
-DENSE_MODEL = "mistralai/Mistral-7B-v0.3"
+DENSE_MODEL = "mistralai/Mistral-7B-v0.1"
 MOE_REF = "mistralai/Mixtral-8x7B-v0.1"
 
 

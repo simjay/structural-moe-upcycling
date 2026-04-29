@@ -53,9 +53,9 @@ python3 -m src.qwen15.upcycle --method gaussian  --sigma 0.01 --output /tmp/qwen
 python3 -m src.qwen15.upcycle --method svd       --k 256 --output /tmp/qwen-moe-svd
 
 # Train
-python3 -m src.qwen15.train --model /tmp/qwen-moe-direct   --run-name qwen-direct   --max-steps 2000
-python3 -m src.qwen15.train --model /tmp/qwen-moe-gaussian  --run-name qwen-gaussian --max-steps 2000
-python3 -m src.qwen15.train --model /tmp/qwen-moe-svd       --run-name qwen-svd      --max-steps 2000
+python3 -m src.qwen15.train --model /tmp/qwen-moe-direct   --run-name qwen-direct   --max-steps 500
+python3 -m src.qwen15.train --model /tmp/qwen-moe-gaussian  --run-name qwen-gaussian --max-steps 500
+python3 -m src.qwen15.train --model /tmp/qwen-moe-svd       --run-name qwen-svd      --max-steps 500
 ```
 
 ## Hardware
