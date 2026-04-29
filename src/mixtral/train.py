@@ -1,13 +1,15 @@
-"""Fine-tune an upcycled MoE model on OpenMathReasoning (cot split) with LoRA.
+"""Fine-tune an upcycled Mixtral model on OpenMathReasoning (cot split) with LoRA.
 
-Loads a model saved by ``src/upcycle.py``, applies LoRA to attention and
-shared expert projections, and trains with SFTTrainer. Logs to wandb for
-comparing convergence across initialization methods.
+Loads a model saved by ``src.mixtral.upcycle``, applies LoRA to attention
+projections, and trains with SFTTrainer. Uses ``device_map="auto"`` to
+auto-shard across available GPUs (designed for 4x H100-80GB).
+
+Logs to wandb for comparing convergence across initialization methods.
 
 Example:
     .. code-block:: bash
 
-        python -m src.train --model /tmp/moe-direct --run-name direct
+        python -m src.mixtral.train --model /tmp/mixtral-direct --run-name direct
 """
 
 import argparse
@@ -35,21 +37,21 @@ def format_sample(sample):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Fine-tune upcycled MoE model")
+    parser = argparse.ArgumentParser(description="Fine-tune upcycled Mixtral model")
     parser.add_argument("--model", required=True, help="Path to upcycled model")
-    parser.add_argument("--run-name", default="moe-train", help="wandb run name")
+    parser.add_argument("--run-name", default="mixtral-train", help="wandb run name")
     parser.add_argument("--max-steps", type=int, default=2000)
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--seq-len", type=int, default=2048)
     parser.add_argument("--lora-r", type=int, default=16)
-    parser.add_argument("--output", default="/tmp/moe-checkpoints")
+    parser.add_argument("--output", default="/tmp/mixtral-checkpoints")
     parser.add_argument("--no-wandb", action="store_true")
     args = parser.parse_args()
 
     print(f"=== Training {args.run_name} ===\n")
 
-    print("Loading model...")
+    print("Loading model (auto-sharding across GPUs)...")
     model = AutoModelForCausalLM.from_pretrained(
         args.model, dtype=torch.bfloat16, device_map="auto",
         attn_implementation="eager",
@@ -63,11 +65,7 @@ def main():
         r=args.lora_r,
         lora_alpha=args.lora_r,
         lora_dropout=0,
-        target_modules=[
-            "q_proj", "k_proj", "v_proj", "o_proj",
-            "shared_expert.gate_proj", "shared_expert.up_proj",
-            "shared_expert.down_proj",
-        ],
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
         bias="none",
         task_type="CAUSAL_LM",
     )
