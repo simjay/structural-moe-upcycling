@@ -8,7 +8,8 @@ dependencies = []
 [project.optional-dependencies]
 train = [
     "torch",
-    "transformers>=4.40",
+    "transformers>=5.0",
+    "peft>=0.17.0",
     "unsloth",
     "trl",
     "datasets",

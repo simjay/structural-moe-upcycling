@@ -1,8 +1,15 @@
-"""Fine-tune an upcycled MoE model on OpenMathReasoning (cot split) with LoRA.
+"""Fine-tune an upcycled Qwen1.5-MoE model on OpenMathReasoning (cot split).
 
-Loads a model saved by ``src.qwen15.upcycle``, applies LoRA to attention and
-shared expert projections, and trains with SFTTrainer. Logs to wandb for
-comparing convergence across initialization methods.
+Loads a model saved by ``src.qwen15.upcycle`` via Unsloth and applies:
+- LoRA to attention projections (q/k/v/o_proj) and shared expert FFN
+- LoRA to fused routing expert parameters (gate_up_proj, down_proj) via
+  ``target_parameters`` (requires PEFT >= 0.17)
+- Full training of the router (``mlp.gate``) and shared expert gate
+  (``mlp.shared_expert_gate``) via ``modules_to_save``
+
+Uses Unsloth for optimized gradient checkpointing and fused kernels.
+Logs to wandb for comparing convergence across initialization methods
+(direct / gaussian / svd).
 
 Example:
     .. code-block:: bash
@@ -14,8 +21,7 @@ import argparse
 
 import torch
 from datasets import load_dataset
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from peft import LoraConfig, get_peft_model
+from unsloth import FastLanguageModel
 from trl import SFTTrainer, SFTConfig
 
 DATASET = "nvidia/OpenMathReasoning"
@@ -42,24 +48,28 @@ def main():
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--seq-len", type=int, default=2048)
-    parser.add_argument("--lora-r", type=int, default=16)
+    parser.add_argument("--lora-r", type=int, default=64)
     parser.add_argument("--output", default="/tmp/moe-checkpoints")
     parser.add_argument("--no-wandb", action="store_true")
     args = parser.parse_args()
 
     print(f"=== Training {args.run_name} ===\n")
 
-    print("Loading model...")
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model, dtype=torch.bfloat16, device_map="auto",
-        attn_implementation="eager",
+    print("Loading model via Unsloth...")
+    model, tokenizer = FastLanguageModel.from_pretrained(
+        model_name=args.model,
+        max_seq_length=args.seq_len,
+        load_in_4bit=False,
     )
-    tokenizer = AutoTokenizer.from_pretrained(args.model)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    print("Applying LoRA...")
-    lora_config = LoraConfig(
+    print("Applying LoRA (attention + experts) and unfreezing router...")
+    num_experts = 60
+    effective_r = max(1, args.lora_r // num_experts)
+
+    model = FastLanguageModel.get_peft_model(
+        model,
         r=args.lora_r,
         lora_alpha=args.lora_r,
         lora_dropout=0,
@@ -68,10 +78,18 @@ def main():
             "shared_expert.gate_proj", "shared_expert.up_proj",
             "shared_expert.down_proj",
         ],
+        target_parameters=[
+            "mlp.experts.gate_up_proj",
+            "mlp.experts.down_proj",
+        ],
+        rank_pattern={
+            "experts.gate_up_proj": effective_r,
+            "experts.down_proj": effective_r,
+        },
+        modules_to_save=["mlp.gate", "mlp.shared_expert_gate"],
         bias="none",
-        task_type="CAUSAL_LM",
+        use_gradient_checkpointing="unsloth",
     )
-    model = get_peft_model(model, lora_config)
     model.print_trainable_parameters()
 
     print("Loading dataset...")
@@ -91,9 +109,9 @@ def main():
         warmup_steps=100,
         logging_steps=10,
         save_steps=500,
-        bf16=True,
-        gradient_checkpointing=True,
-        gradient_checkpointing_kwargs={"use_reentrant": False},
+        optim="adamw_8bit",
+        bf16=torch.cuda.is_bf16_supported(),
+        fp16=not torch.cuda.is_bf16_supported(),
         report_to=report_to,
         dataset_text_field="text",
         max_length=args.seq_len,
