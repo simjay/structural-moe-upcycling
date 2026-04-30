@@ -19,9 +19,40 @@ from datasets import load_dataset
 from peft import LoraConfig, get_peft_model
 from trl import SFTTrainer, SFTConfig
 import gc
+from transformers import TrainerCallback
+import wandb
 
 DATASET = "nvidia/OpenMathReasoning"
 DATASET_SPLIT = "cot"
+
+class LayerNormLogger(TrainerCallback):
+    def on_log(self, args, state, control, model=None, **kwargs):
+        if model is None: return
+        
+        norms = {"gate": 0.0, "attn": 0.0, "expert": 0.0}
+        counts = {"gate": 0, "attn": 0, "expert": 0}
+
+        for name, param in model.named_parameters():
+            if param.grad is not None:
+                # Calculate the Frobenius norm of the gradient
+                grad_norm = param.grad.data.norm(2).item()
+                
+                if "gate" in name.lower() and "shared" not in name.lower():
+                    norms["gate"] += grad_norm
+                    counts["gate"] += 1
+                elif any(x in name.lower() for x in ["q_proj", "k_proj", "v_proj", "o_proj"]):
+                    norms["attn"] += grad_norm
+                    counts["attn"] += 1
+                elif "experts" in name.lower():
+                    norms["expert"] += grad_norm
+                    counts["expert"] += 1
+
+        logs = {}
+        for k in norms:
+            if counts[k] > 0:
+                logs[f"norms/{k}_grad_norm_avg"] = norms[k] / counts[k]
+        
+        wandb.log(logs, commit=False)
 
 
 def format_sample(sample):
@@ -129,6 +160,7 @@ def main():
         processing_class=tokenizer,
         train_dataset=ds,
         args=training_args,
+        callbacks=[LayerNormLogger()],
     )
 
     print(f"\nTraining for {args.max_steps} steps...")
