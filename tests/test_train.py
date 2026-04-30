@@ -26,7 +26,7 @@ def build_tiny_mixtral():
         num_key_value_heads=2,
         num_local_experts=2,
         num_experts_per_tok=2,
-        vocab_size=1000,
+        vocab_size=32000,
     )
 
     torch.set_default_dtype(torch.bfloat16)
