@@ -35,9 +35,9 @@ methods:
 
 All three methods are trained under identical conditions on OpenMathReasoning and
 compared on convergence speed and final loss. Training applies LoRA to attention
-and expert FFN parameters (via PEFT `target_parameters` for fused 3D tensors),
-while the router is fully trained (`modules_to_save`). Unsloth provides optimized
-gradient checkpointing and fused kernels for faster training.
+and expert FFN weights via Unsloth's Split LoRA (which handles fused 3D expert
+tensors natively), while the router is fully trained (`modules_to_save`). Unsloth
+provides optimized gradient checkpointing and fused kernels for faster training.
 
 ## Dataset
 
@@ -109,7 +109,7 @@ prime pods terminate <pod-id>
 | `test_inference.py` | Load Qwen1.5-1.8B via Unsloth and generate tokens, confirms GPU, CUDA, and model loading work | ~30 s |
 | `test_data.py` | Stream and inspect samples from `nvidia/OpenMathReasoning`, confirms dataset access and the `datasets` library | ~10 s |
 | `test_upcycle.py` | Convert dense Qwen1.5-1.8B → MoE (14.3B params): exact-copy shared expert (5504), partition dense FFN into 4 row-slices and replicate 15× for 60 experts, run inference | ~3 min |
-| `test_train.py` | Build a tiny Mixtral MoE model, apply LoRA to attention + expert parameters (`target_parameters`) and fully train the router (`modules_to_save`), run 10 SFT steps | ~1 min |
+| `test_train.py` | Build a tiny Mixtral MoE model, apply LoRA to attention and fully train the router (`modules_to_save`), run 10 SFT steps | ~1 min |
 
 ## Running the experiments
 
@@ -145,8 +145,8 @@ python3 -m src.mixtral.train --model /tmp/mixtral-svd       --run-name mixtral-s
 
 | Parameter | Value |
 | --- | --- |
-| LoRA rank (attention) | 16 (Mixtral) / 64 (Qwen1.5) |
-| LoRA rank (experts) | rank // num_experts (2 for Mixtral, 1 for Qwen1.5) |
+| LoRA rank | 16 (Mixtral) / 64 (Qwen1.5) |
+| LoRA targets | attention (q/k/v/o_proj) + expert FFN (gate_up_proj, down_proj) via Unsloth Split LoRA |
 | Router training | full (via `modules_to_save`) |
 | Batch size | 2 (x 4 gradient accumulation = effective 8) |
 | Learning rate | 2e-4, cosine schedule, 100 warmup steps |

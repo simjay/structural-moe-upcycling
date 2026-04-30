@@ -9,7 +9,7 @@ dependencies = []
 train = [
     "torch",
     "transformers>=5.0",
-    "peft>=0.17.0",
+    "peft",
     "unsloth",
     "trl",
     "datasets",

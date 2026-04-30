@@ -1,15 +1,15 @@
 """Fine-tune an upcycled Qwen1.5-MoE model on OpenMathReasoning (cot split).
 
 Loads a model saved by ``src.qwen15.upcycle`` via Unsloth and applies:
-- LoRA to attention projections (q/k/v/o_proj) and shared expert FFN
-- LoRA to fused routing expert parameters (gate_up_proj, down_proj) via
-  ``target_parameters`` (requires PEFT >= 0.17)
+- LoRA to attention projections (q/k/v/o_proj)
+- LoRA to expert FFN weights (gate_up_proj, down_proj via Unsloth Split LoRA;
+  gate_proj, up_proj on the shared expert via standard LoRA)
 - Full training of the router (``mlp.gate``) and shared expert gate
   (``mlp.shared_expert_gate``) via ``modules_to_save``
 
-Uses Unsloth for optimized gradient checkpointing and fused kernels.
-Logs to wandb for comparing convergence across initialization methods
-(direct / gaussian / svd).
+Uses Unsloth for Split LoRA on fused 3D expert tensors, optimized gradient
+checkpointing, and fused kernels. Logs to wandb for comparing convergence
+across initialization methods (direct / gaussian / svd).
 
 Example:
     .. code-block:: bash
@@ -65,9 +65,6 @@ def main():
         tokenizer.pad_token = tokenizer.eos_token
 
     print("Applying LoRA (attention + experts) and unfreezing router...")
-    num_experts = 60
-    effective_r = max(1, args.lora_r // num_experts)
-
     model = FastLanguageModel.get_peft_model(
         model,
         r=args.lora_r,
@@ -75,17 +72,9 @@ def main():
         lora_dropout=0,
         target_modules=[
             "q_proj", "k_proj", "v_proj", "o_proj",
-            "shared_expert.gate_proj", "shared_expert.up_proj",
-            "shared_expert.down_proj",
+            "gate_up_proj", "down_proj",
+            "gate_proj", "up_proj",
         ],
-        target_parameters=[
-            "mlp.experts.gate_up_proj",
-            "mlp.experts.down_proj",
-        ],
-        rank_pattern={
-            "experts.gate_up_proj": effective_r,
-            "experts.down_proj": effective_r,
-        },
         modules_to_save=["mlp.gate", "mlp.shared_expert_gate"],
         bias="none",
         use_gradient_checkpointing="unsloth",
