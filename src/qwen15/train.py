@@ -25,36 +25,6 @@ import wandb
 DATASET = "nvidia/OpenMathReasoning"
 DATASET_SPLIT = "cot"
 
-class LayerNormLogger(TrainerCallback):
-    def on_log(self, args, state, control, model=None, **kwargs):
-        if model is None: return
-        
-        norms = {"gate": 0.0, "attn": 0.0, "expert": 0.0}
-        counts = {"gate": 0, "attn": 0, "expert": 0}
-
-        for name, param in model.named_parameters():
-            if param.grad is not None:
-                # Calculate the Frobenius norm of the gradient
-                grad_norm = param.grad.data.norm(2).item()
-                
-                if "gate" in name.lower() and "shared" not in name.lower():
-                    norms["gate"] += grad_norm
-                    counts["gate"] += 1
-                elif any(x in name.lower() for x in ["q_proj", "k_proj", "v_proj", "o_proj"]):
-                    norms["attn"] += grad_norm
-                    counts["attn"] += 1
-                elif "experts" in name.lower():
-                    norms["expert"] += grad_norm
-                    counts["expert"] += 1
-
-        logs = {}
-        for k in norms:
-            if counts[k] > 0:
-                logs[f"norms/{k}_grad_norm_avg"] = norms[k] / counts[k]
-        
-        wandb.log(logs, commit=False)
-
-
 def format_sample(sample):
     """Format a dataset sample as a single training string.
 
@@ -84,48 +54,23 @@ def main():
     print(f"=== Training {args.run_name} ===\n")
 
     print("Loading model...")
-    # model = AutoModelForCausalLM.from_pretrained(
-    #     args.model, dtype=torch.bfloat16, device_map="auto",
-    #     attn_implementation="eager",
-    # )
-    # tokenizer = AutoTokenizer.from_pretrained(args.model)
-    # if tokenizer.pad_token is None:
-    #     tokenizer.pad_token = tokenizer.eos_token
     model_base, tokenizer = FastLanguageModel.from_pretrained(
       model_name = args.model,
       max_seq_length = args.seq_len,
       load_in_4bit = True,
-      # device_map = "cpu",
     )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-    # model_base = model_base.to("cuda")
-
-    # print("Applying LoRA...")
-    # lora_config = LoraConfig(
-    #     r=args.lora_r,
-    #     lora_alpha=args.lora_r,
-    #     lora_dropout=0,
-    #     target_modules=[
-    #         "q_proj", "k_proj", "v_proj", "o_proj",
-    #         "shared_expert.gate_proj", "shared_expert.up_proj",
-    #         "shared_expert.down_proj",
-    #     ],
-    #     bias="none",
-    #     task_type="CAUSAL_LM",
-    # )
-    # model = get_peft_model(model, lora_config)
 
     model = FastLanguageModel.get_peft_model(
       model_base,
       r = args.lora_r,
       target_modules = [
           "q_proj", "k_proj", "v_proj", "o_proj",
-          "gate_proj", "up_proj", "down_proj" # Unsloth handles naming internally
+          "gate_proj", "up_proj", "down_proj", "gate", "router",
       ],
       lora_alpha = args.lora_r,
       lora_dropout = 0,
-      # This is 2x faster and uses less memory than standard checkpointing
       use_gradient_checkpointing = "unsloth", 
     )
     model.print_trainable_parameters()
@@ -160,9 +105,12 @@ def main():
         processing_class=tokenizer,
         train_dataset=ds,
         args=training_args,
-        callbacks=[LayerNormLogger()],
     )
 
+
+    # for name, param in model.named_parameters():
+    #     if param.requires_grad and ("gate" in name.lower() or "router" in name.lower()):
+    #         print(f"DEBUG: Found trainable gate layer: {name}")
     print(f"\nTraining for {args.max_steps} steps...")
     result = trainer.train()
 
