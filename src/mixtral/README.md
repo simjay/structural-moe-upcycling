@@ -8,12 +8,13 @@ We originally considered Qwen3.5 model pairs (e.g. Qwen3.5-9B → Qwen3.5-35B-A3
 but these have fundamental architectural mismatches — different hidden sizes,
 layer counts, and attention head counts — making direct upcycling impossible.
 
-Mistral 7B and Mixtral 8x7B share **every dimension** perfectly, making this
-the cleanest available large-scale upcycling target.
+Mistral 7B v0.1 and Mixtral 8x7B v0.1 share **every dimension** perfectly,
+making this the cleanest available large-scale upcycling target. (v0.3 expanded
+the vocab to 32768, breaking the match.)
 
 ## Architecture
 
-| Component | Dense (Mistral 7B) | MoE (Mixtral 8x7B) | Match |
+| Component | Dense (Mistral 7B v0.1) | MoE (Mixtral 8x7B v0.1) | Match |
 | --- | --- | --- | --- |
 | hidden_size | 4096 | 4096 | exact |
 | layers | 32 | 32 | exact |
@@ -53,9 +54,9 @@ python3 -m src.mixtral.upcycle --method gaussian  --sigma 0.01 --output /tmp/mix
 python3 -m src.mixtral.upcycle --method svd       --k 256 --output /tmp/mixtral-svd
 
 # Train (multi-GPU)
-python3 -m src.mixtral.train --model /tmp/mixtral-direct   --run-name mixtral-direct   --max-steps 2000
-python3 -m src.mixtral.train --model /tmp/mixtral-gaussian  --run-name mixtral-gaussian --max-steps 2000
-python3 -m src.mixtral.train --model /tmp/mixtral-svd       --run-name mixtral-svd      --max-steps 2000
+python3 -m src.mixtral.train --model /tmp/mixtral-direct   --run-name mixtral-direct   --max-steps 500
+python3 -m src.mixtral.train --model /tmp/mixtral-gaussian  --run-name mixtral-gaussian --max-steps 500
+python3 -m src.mixtral.train --model /tmp/mixtral-svd       --run-name mixtral-svd      --max-steps 500
 ```
 
 ## Hardware

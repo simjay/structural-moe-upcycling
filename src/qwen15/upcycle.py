@@ -317,6 +317,8 @@ def upcycle(method, output_dir, sigma=0.01, k=256):
     tokenizer.save_pretrained(output_dir)
 
     params = sum(p.numel() for p in moe.parameters())
+
+    del moe
     print(f"MoE total params: {params:,} ({params / 1e9:.1f}B)")
     print("Done.")
 

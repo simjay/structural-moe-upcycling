@@ -4,3 +4,8 @@ venv/
 .env
 outputs/
 .DS_Store
+unsloth_compiled_cache/
+wandb/
+*.log
+__pycache__/
+.ipynb_checkpoints/
