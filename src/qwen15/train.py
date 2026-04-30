@@ -67,12 +67,19 @@ def main():
       r = args.lora_r,
       target_modules = [
           "q_proj", "k_proj", "v_proj", "o_proj",
-          "gate_proj", "up_proj", "down_proj", "gate", "router",
+          "gate_proj", "up_proj", "down_proj"
       ],
       lora_alpha = args.lora_r,
       lora_dropout = 0,
       use_gradient_checkpointing = "unsloth", 
     )
+    
+    # Manually enable training for the router/gate modules
+    for name, param in model.named_parameters():
+        if any(x in name for x in ["mlp.gate", "shared_expert_gate"]):
+            param.data = param.data.to(torch.bfloat16) 
+            param.requires_grad = True
+            # print(f"Full Fine-Tuning enabled for: {name} (Casted to BF16)")
     model.print_trainable_parameters()
 
     print("Loading dataset...")
