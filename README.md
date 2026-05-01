@@ -34,10 +34,9 @@ methods:
    W_e = U (Σ_struct + Σ̃_res,e) Vᵀ
 
 All three methods are trained under identical conditions on OpenMathReasoning and
-compared on convergence speed and final loss. Training applies LoRA to attention
-and expert FFN weights via Unsloth's Split LoRA (which handles fused 3D expert
-tensors natively), while the router is fully trained (`modules_to_save`). Unsloth
-provides optimized gradient checkpointing and fused kernels for faster training.
+compared on convergence speed and final loss. Only expert FFN weights and the
+router are trained (attention is frozen) to isolate the effect of expert
+initialization on convergence.
 
 ## Dataset
 
@@ -106,10 +105,10 @@ prime pods terminate <pod-id>
 
 | Script | What it tests | Time |
 | --- | --- | --- |
-| `test_inference.py` | Load Qwen1.5-1.8B via Unsloth and generate tokens, confirms GPU, CUDA, and model loading work | ~30 s |
+| `test_inference.py` | Load Qwen1.5-1.8B and generate tokens, confirms GPU, CUDA, and model loading work | ~30 s |
 | `test_data.py` | Stream and inspect samples from `nvidia/OpenMathReasoning`, confirms dataset access and the `datasets` library | ~10 s |
 | `test_upcycle.py` | Convert dense Qwen1.5-1.8B → MoE (14.3B params): exact-copy shared expert (5504), partition dense FFN into 4 row-slices and replicate 15× for 60 experts, run inference | ~3 min |
-| `test_train.py` | Build a tiny Mixtral MoE model, apply LoRA to attention and fully train the router (`modules_to_save`), run 10 SFT steps | ~1 min |
+| `test_train.py` | Build a tiny Mixtral MoE model, freeze attention, train experts + router for 10 SFT steps | ~1 min |
 
 ## Running the experiments
 
@@ -118,13 +117,13 @@ prime pods terminate <pod-id>
 ```bash
 # Upcycle
 python3 -m src.qwen15.upcycle --method direct    --output /tmp/qwen-moe-direct
-python3 -m src.qwen15.upcycle --method gaussian  --output /tmp/qwen-moe-gaussian     --sigma 0.01 
-python3 -m src.qwen15.upcycle --method svd       --output /tmp/qwen-moe-svd          --k 256 
+python3 -m src.qwen15.upcycle --method gaussian  --output /tmp/qwen-moe-gaussian
+python3 -m src.qwen15.upcycle --method svd       --output /tmp/qwen-moe-svd
 
 # Train
-python3 -m src.qwen15.train --model /tmp/qwen-moe-direct    --run-name qwen-direct   --max-steps 500
-python3 -m src.qwen15.train --model /tmp/qwen-moe-gaussian  --run-name qwen-gaussian --max-steps 500
-python3 -m src.qwen15.train --model /tmp/qwen-moe-svd       --run-name qwen-svd      --max-steps 500
+python3 -m src.qwen15.train --model /tmp/qwen-moe-direct    --run-name qwen-direct
+python3 -m src.qwen15.train --model /tmp/qwen-moe-gaussian  --run-name qwen-gaussian
+python3 -m src.qwen15.train --model /tmp/qwen-moe-svd       --run-name qwen-svd
 ```
 
 ### Mixtral (large-scale)
@@ -132,35 +131,37 @@ python3 -m src.qwen15.train --model /tmp/qwen-moe-svd       --run-name qwen-svd 
 ```bash
 # Upcycle
 python3 -m src.mixtral.upcycle --method direct    --output /tmp/mixtral-direct
-python3 -m src.mixtral.upcycle --method gaussian  --output /tmp/mixtral-gaussian    --sigma 0.01 
-python3 -m src.mixtral.upcycle --method svd       --output /tmp/mixtral-svd         --k 256 
+python3 -m src.mixtral.upcycle --method gaussian  --output /tmp/mixtral-gaussian
+python3 -m src.mixtral.upcycle --method svd       --output /tmp/mixtral-svd
 
 # Train (on 4x H100-80GB)
-python3 -m src.mixtral.train --model /tmp/mixtral-direct    --run-name mixtral-direct   --max-steps 500
-python3 -m src.mixtral.train --model /tmp/mixtral-gaussian  --run-name mixtral-gaussian --max-steps 500
-python3 -m src.mixtral.train --model /tmp/mixtral-svd       --run-name mixtral-svd      --max-steps 500
+python3 -m src.mixtral.train --model /tmp/mixtral-direct    --run-name mixtral-direct
+python3 -m src.mixtral.train --model /tmp/mixtral-gaussian  --run-name mixtral-gaussian
+python3 -m src.mixtral.train --model /tmp/mixtral-svd       --run-name mixtral-svd
 ```
 
 ### Hyperparameters (held constant across all runs)
 
 | Parameter | Value |
 | --- | --- |
-| LoRA rank | 16 (Mixtral) / 64 (Qwen1.5) |
-| LoRA targets | attention (q/k/v/o_proj) + expert FFN (gate_up_proj, down_proj) via Unsloth Split LoRA |
-| Router training | full (via `modules_to_save`) |
+| Trained components | expert FFNs + router only (attention frozen) |
+| Gaussian sigma | 1.0 |
+| SVD k (structural singular values) | 8 |
+| SVD residual noise scale | 1.0 |
+| Max steps | 300 |
 | Batch size | 2 (x 4 gradient accumulation = effective 8) |
 | Learning rate | 2e-4, cosine schedule, 100 warmup steps |
 | Optimizer | adamw_8bit |
 | Sequence length | 2048 |
 | Precision | bf16 |
-| Gradient checkpointing | Unsloth optimized |
-| Dataset | OpenMathReasoning (cot split) |
+| Gradient checkpointing | enabled |
+| Dataset | OpenMathReasoning (cot split, shuffled) |
 
 ### Compare
 
 Open wandb and compare the six runs on:
 - Training loss convergence speed
-- Final training loss at step 500
+- Final training loss at step 300
 - Cross-scale consistency (does the same init method win at both scales?)
 
 ### Project structure
@@ -172,12 +173,12 @@ structural-moe-upcycling/
 │   ├── qwen15/
 │   │   ├── __init__.py
 │   │   ├── upcycle.py   # Qwen1.5: 3 init methods + shared/routing expert setup
-│   │   ├── train.py     # Qwen1.5: LoRA SFT (attention + experts + router)
+│   │   ├── train.py     # Qwen1.5: train experts + router only (attention frozen)
 │   │   └── README.md
 │   └── mixtral/
 │       ├── __init__.py
 │       ├── upcycle.py   # Mixtral: 3 init methods, full-size experts
-│       ├── train.py     # Mixtral: LoRA SFT (attention + experts + router), Unsloth
+│       ├── train.py     # Mixtral: train experts + router only (attention frozen)
 │       └── README.md
 ├── tests/
 │   ├── test_inference.py

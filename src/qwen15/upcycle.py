@@ -111,7 +111,7 @@ def init_direct(dense, moe, cfg):
             n_experts, expert_dim, dense_dim)
 
 
-def init_gaussian(dense, moe, cfg, sigma=0.01):
+def init_gaussian(dense, moe, cfg, sigma=1.0):
     """Initialize experts via partition + replicate, then add Gaussian noise.
 
     First applies the direct-copy initialization, then perturbs each expert's
@@ -124,7 +124,7 @@ def init_gaussian(dense, moe, cfg, sigma=0.01):
         cfg: Dict with keys ``n_layers``, ``n_experts``, ``expert_dim``,
             ``dense_dim``.
         sigma: Noise scale relative to mean absolute weight magnitude.
-            Defaults to 0.01.
+            Defaults to 1.0.
     """
     init_direct(dense, moe, cfg)
 
@@ -136,7 +136,7 @@ def init_gaussian(dense, moe, cfg, sigma=0.01):
         experts.down_proj.add_(torch.randn_like(experts.down_proj) * std)
 
 
-def _svd_init_matrix(W, expert_dim, n_experts, k):
+def _svd_init_matrix(W, expert_dim, n_experts, k, svd_scale):
     """Initialize expert matrices from a dense weight via SVD residual sampling.
 
     Decomposes W = U @ diag(S) @ Vt, keeps top-k singular values as the
@@ -148,6 +148,7 @@ def _svd_init_matrix(W, expert_dim, n_experts, k):
         expert_dim: Number of output rows per expert (1408).
         n_experts: Total number of experts to initialize (60).
         k: Number of top singular values to treat as structural.
+        svd_scale: Noise scale for residual perturbation.
 
     Returns:
         Tensor of shape ``(n_experts, expert_dim, in_features)``.
@@ -166,7 +167,7 @@ def _svd_init_matrix(W, expert_dim, n_experts, k):
     result = torch.zeros(n_experts, expert_dim, W.shape[1], dtype=W.dtype)
 
     for e in range(n_experts):
-        noise = torch.randn_like(S_res) * S_res * 0.1
+        noise = torch.randn_like(S_res) * S_res * svd_scale
         S_e = S_res + noise
 
         W_struct = U_struct[:expert_dim, :] @ torch.diag(S_struct) @ Vt_struct
@@ -178,7 +179,7 @@ def _svd_init_matrix(W, expert_dim, n_experts, k):
     return result
 
 
-def _svd_init_down_matrix(W, expert_dim, n_experts, k):
+def _svd_init_down_matrix(W, expert_dim, n_experts, k, svd_scale):
     """Initialize expert down_proj matrices via SVD residual sampling.
 
     Same approach as ``_svd_init_matrix`` but transposed for down_proj,
@@ -189,6 +190,7 @@ def _svd_init_down_matrix(W, expert_dim, n_experts, k):
         expert_dim: Number of input columns per expert (1408).
         n_experts: Total number of experts to initialize (60).
         k: Number of top singular values to treat as structural.
+        svd_scale: Noise scale for residual perturbation.
 
     Returns:
         Tensor of shape ``(n_experts, hidden, expert_dim)``.
@@ -206,7 +208,7 @@ def _svd_init_down_matrix(W, expert_dim, n_experts, k):
     result = torch.zeros(n_experts, W.shape[0], expert_dim, dtype=W.dtype)
 
     for e in range(n_experts):
-        noise = torch.randn_like(S_res) * S_res * 0.1
+        noise = torch.randn_like(S_res) * S_res * svd_scale
         S_e = S_res + noise
 
         W_struct = U_struct @ torch.diag(S_struct) @ Vt_struct[:, :expert_dim]
@@ -218,7 +220,7 @@ def _svd_init_down_matrix(W, expert_dim, n_experts, k):
     return result
 
 
-def init_svd(dense, moe, cfg, k=256):
+def init_svd(dense, moe, cfg, k=8, svd_scale=1.0):
     """Initialize experts via SVD decomposition with residual sampling.
 
     For each dense FFN matrix, the top-k singular values form a shared
@@ -230,7 +232,8 @@ def init_svd(dense, moe, cfg, k=256):
         moe: The MoE target model.
         cfg: Dict with keys ``n_layers``, ``n_experts``, ``expert_dim``.
         k: Number of top singular values to keep as structural.
-            Defaults to 256.
+            Defaults to 8.
+        svd_scale: Noise scale for residual perturbation. Defaults to 1.0.
     """
     n_layers = cfg["n_layers"]
     n_experts = cfg["n_experts"]
@@ -242,18 +245,18 @@ def init_svd(dense, moe, cfg, k=256):
         experts = moe.model.layers[i].mlp.experts
 
         gate_init = _svd_init_matrix(
-            dl.mlp.gate_proj.weight, expert_dim, n_experts, k)
+            dl.mlp.gate_proj.weight, expert_dim, n_experts, k, svd_scale)
         up_init = _svd_init_matrix(
-            dl.mlp.up_proj.weight, expert_dim, n_experts, k)
+            dl.mlp.up_proj.weight, expert_dim, n_experts, k, svd_scale)
         down_init = _svd_init_down_matrix(
-            dl.mlp.down_proj.weight, expert_dim, n_experts, k)
+            dl.mlp.down_proj.weight, expert_dim, n_experts, k, svd_scale)
 
         experts.gate_up_proj[:, :expert_dim, :].copy_(gate_init)
         experts.gate_up_proj[:, expert_dim:, :].copy_(up_init)
         experts.down_proj.copy_(down_init)
 
 
-def upcycle(method, output_dir, sigma=0.01, k=256):
+def upcycle(method, output_dir, sigma=1.0, k=8, svd_scale=1.0):
     """Build an MoE model from the dense checkpoint using the given init method.
 
     Loads the dense model, creates an empty MoE shell, copies all shared
@@ -262,9 +265,10 @@ def upcycle(method, output_dir, sigma=0.01, k=256):
     Args:
         method: One of ``"direct"``, ``"gaussian"``, or ``"svd"``.
         output_dir: Path to save the upcycled model and tokenizer.
-        sigma: Noise scale for the gaussian method. Defaults to 0.01.
+        sigma: Noise scale for the gaussian method. Defaults to 1.0.
         k: Number of structural singular values for the svd method.
-            Defaults to 256.
+            Defaults to 8.
+        svd_scale: Noise scale for SVD residual perturbation. Defaults to 1.0.
     """
     print(f"=== Upcycling with method={method} ===\n")
 
@@ -306,7 +310,7 @@ def upcycle(method, output_dir, sigma=0.01, k=256):
         elif method == "gaussian":
             init_gaussian(dense, moe, cfg, sigma=sigma)
         elif method == "svd":
-            init_svd(dense, moe, cfg, k=k)
+            init_svd(dense, moe, cfg, k=k, svd_scale=svd_scale)
         else:
             raise ValueError(f"Unknown method: {method}")
 
@@ -326,12 +330,15 @@ def main():
     parser.add_argument("--method", required=True,
                         choices=["direct", "gaussian", "svd"])
     parser.add_argument("--output", required=True, help="Output directory")
-    parser.add_argument("--sigma", type=float, default=0.01,
+    parser.add_argument("--sigma", type=float, default=1.0,
                         help="Noise scale for gaussian method")
-    parser.add_argument("--k", type=int, default=256,
+    parser.add_argument("--k", type=int, default=8,
                         help="Number of structural singular values for svd method")
+    parser.add_argument("--svd-scale", type=float, default=1.0,
+                        help="Noise scale for SVD residual perturbation")
     args = parser.parse_args()
-    upcycle(args.method, args.output, sigma=args.sigma, k=args.k)
+    upcycle(args.method, args.output, sigma=args.sigma, k=args.k,
+            svd_scale=args.svd_scale)
 
 
 if __name__ == "__main__":

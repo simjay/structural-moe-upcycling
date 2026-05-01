@@ -1,19 +1,14 @@
-"""Sanity check: run 10 LoRA SFT steps on a tiny Mixtral-style MoE model.
+"""Sanity check: run 10 SFT steps on a tiny Mixtral-style MoE model.
 
 Creates a minimal Mixtral config from scratch (2 layers, 2 experts, small dims)
 to verify that the training loop works with:
-- LoRA on attention (q/k/v/o_proj)
-- Full training of the router (modules_to_save)
-
-Expert LoRA is not tested here because it requires Unsloth's Split LoRA to
-handle fused 3D expert tensors. The production training scripts use
-``FastLanguageModel.get_peft_model`` which applies Split LoRA via
-``target_modules=["gate_up_proj", "down_proj"]``.
+- Expert FFN weights trained (unfrozen)
+- Router trained (unfrozen)
+- Attention frozen
 """
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, MixtralConfig
-from peft import LoraConfig, get_peft_model
 from trl import SFTTrainer, SFTConfig
 from datasets import Dataset
 
@@ -39,7 +34,7 @@ def build_tiny_mixtral():
     return model, config
 
 
-def test_moe_lora_training():
+def test_moe_training():
     print("Building tiny Mixtral MoE model...")
     model, config = build_tiny_mixtral()
 
@@ -47,31 +42,31 @@ def test_moe_lora_training():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    lora_r = 8
+    print("Freezing all, then unfreezing experts + router...")
+    for param in model.parameters():
+        param.requires_grad = False
 
-    print("Applying LoRA (attention) + fully training router...")
-    lora_config = LoraConfig(
-        r=lora_r,
-        lora_alpha=lora_r,
-        lora_dropout=0,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
-        modules_to_save=["mlp.gate"],
-        bias="none",
-        task_type="CAUSAL_LM",
-    )
-    model = get_peft_model(model, lora_config)
-    model.print_trainable_parameters()
+    for name, param in model.named_parameters():
+        if "experts" in name or "mlp.gate" in name:
+            param.requires_grad = True
 
     trainable_names = [n for n, p in model.named_parameters() if p.requires_grad]
 
-    has_attn_lora = any("lora" in n and "self_attn" in n for n in trainable_names)
+    has_expert = any("experts" in n for n in trainable_names)
     has_router = any("gate" in n and "experts" not in n for n in trainable_names)
+    attn_frozen = all("self_attn" not in n for n in trainable_names)
 
-    assert has_attn_lora, "Expected attention LoRA adapters to be trainable"
+    assert has_expert, "Expected expert FFN weights to be trainable"
     assert has_router, "Expected router (gate) to be trainable"
+    assert attn_frozen, "Expected attention to be frozen"
 
-    print(f"  Attention LoRA: {has_attn_lora}")
+    print(f"  Expert FFN:     {has_expert}")
     print(f"  Router (gate):  {has_router}")
+    print(f"  Attention frozen: {attn_frozen}")
+
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total = sum(p.numel() for p in model.parameters())
+    print(f"  trainable: {trainable:,} / {total:,} ({100 * trainable / total:.1f}%)")
 
     samples = [{"text": f"Problem: {a}+{b}=?\nAnswer: {a + b}"}
                for a in range(1, 9) for b in range(1, 9)]
@@ -88,6 +83,7 @@ def test_moe_lora_training():
             learning_rate=2e-4,
             logging_steps=1,
             bf16=True,
+            gradient_checkpointing=True,
             report_to="none",
             dataset_text_field="text",
             max_length=MAX_SEQ,
@@ -100,8 +96,8 @@ def test_moe_lora_training():
     print(f"\nFinal loss: {result.training_loss:.4f}")
     print(f"Steps: {result.global_step}")
     assert result.global_step == 10, f"Expected 10 steps, got {result.global_step}"
-    print("MoE LoRA training test passed!")
+    print("MoE training test passed!")
 
 
 if __name__ == "__main__":
-    test_moe_lora_training()
+    test_moe_training()

@@ -50,13 +50,13 @@ is simpler — no partitioning or padding needed.
 ```bash
 # Upcycle (runs on CPU, ~5 min for direct, ~45 min for SVD)
 python3 -m src.mixtral.upcycle --method direct   --output /tmp/mixtral-direct
-python3 -m src.mixtral.upcycle --method gaussian  --sigma 0.01 --output /tmp/mixtral-gaussian
-python3 -m src.mixtral.upcycle --method svd       --k 256 --output /tmp/mixtral-svd
+python3 -m src.mixtral.upcycle --method gaussian  --output /tmp/mixtral-gaussian
+python3 -m src.mixtral.upcycle --method svd       --output /tmp/mixtral-svd
 
 # Train (multi-GPU)
-python3 -m src.mixtral.train --model /tmp/mixtral-direct   --run-name mixtral-direct   --max-steps 500
-python3 -m src.mixtral.train --model /tmp/mixtral-gaussian  --run-name mixtral-gaussian --max-steps 500
-python3 -m src.mixtral.train --model /tmp/mixtral-svd       --run-name mixtral-svd      --max-steps 500
+python3 -m src.mixtral.train --model /tmp/mixtral-direct   --run-name mixtral-direct
+python3 -m src.mixtral.train --model /tmp/mixtral-gaussian  --run-name mixtral-gaussian
+python3 -m src.mixtral.train --model /tmp/mixtral-svd       --run-name mixtral-svd
 ```
 
 ## Hardware

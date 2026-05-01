@@ -1,13 +1,11 @@
 """Fine-tune an upcycled Mixtral model on OpenMathReasoning (cot split).
 
-Loads a model saved by ``src.mixtral.upcycle`` via Unsloth and applies:
-- LoRA to attention projections (q/k/v/o_proj)
-- LoRA to expert FFN weights (gate_up_proj, down_proj) via Unsloth Split LoRA
-- Full training of the router (``mlp.gate``) via ``modules_to_save``
+Loads a model saved by ``src.mixtral.upcycle`` and trains only:
+- Expert FFN weights (gate_up_proj, down_proj) — full fine-tuning
+- Router (mlp.gate) — full fine-tuning
 
-Uses Unsloth for Split LoRA on fused 3D expert tensors, optimized gradient
-checkpointing, and fused kernels (~2x faster, ~30% less VRAM). Logs to wandb
-for comparing convergence across initialization methods (direct / gaussian / svd).
+Attention projections are frozen to isolate the effect of expert initialization.
+Logs to wandb for comparing convergence across initialization methods.
 
 Example:
     .. code-block:: bash
@@ -18,8 +16,8 @@ Example:
 import argparse
 
 import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
 from datasets import load_dataset
-from unsloth import FastLanguageModel
 from trl import SFTTrainer, SFTConfig
 
 DATASET = "nvidia/OpenMathReasoning"
@@ -42,44 +40,39 @@ def main():
     parser = argparse.ArgumentParser(description="Fine-tune upcycled Mixtral model")
     parser.add_argument("--model", required=True, help="Path to upcycled model")
     parser.add_argument("--run-name", default="mixtral-train", help="wandb run name")
-    parser.add_argument("--max-steps", type=int, default=500)
+    parser.add_argument("--max-steps", type=int, default=300)
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--seq-len", type=int, default=2048)
-    parser.add_argument("--lora-r", type=int, default=16)
     parser.add_argument("--output", default="/tmp/mixtral-checkpoints")
     parser.add_argument("--no-wandb", action="store_true")
     args = parser.parse_args()
 
     print(f"=== Training {args.run_name} ===\n")
 
-    print("Loading model via Unsloth...")
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=args.model,
-        max_seq_length=args.seq_len,
-        load_in_4bit=False,
+    print("Loading model...")
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model, torch_dtype=torch.bfloat16, device_map="auto",
     )
+    tokenizer = AutoTokenizer.from_pretrained(args.model)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    print("Applying LoRA (attention + experts) and unfreezing router...")
-    model = FastLanguageModel.get_peft_model(
-        model,
-        r=args.lora_r,
-        lora_alpha=args.lora_r,
-        lora_dropout=0,
-        target_modules=[
-            "q_proj", "k_proj", "v_proj", "o_proj",
-            "gate_up_proj", "down_proj",
-        ],
-        modules_to_save=["mlp.gate"],
-        bias="none",
-        use_gradient_checkpointing="unsloth",
-    )
-    model.print_trainable_parameters()
+    print("Freezing all, then unfreezing experts + router...")
+    for param in model.parameters():
+        param.requires_grad = False
+
+    for name, param in model.named_parameters():
+        if "experts" in name or "mlp.gate" in name:
+            param.requires_grad = True
+
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total = sum(p.numel() for p in model.parameters())
+    print(f"trainable params: {trainable:,} || all params: {total:,} || trainable%: {100 * trainable / total:.2f}")
 
     print("Loading dataset...")
     ds = load_dataset(DATASET, split=DATASET_SPLIT, streaming=True)
+    ds = ds.shuffle(seed=42, buffer_size=10_000)
     ds = ds.map(format_sample)
 
     report_to = "none" if args.no_wandb else "wandb"
@@ -94,10 +87,11 @@ def main():
         lr_scheduler_type="cosine",
         warmup_steps=100,
         logging_steps=10,
-        save_steps=500,
+        save_steps=args.max_steps,
         optim="adamw_8bit",
         bf16=torch.cuda.is_bf16_supported(),
         fp16=not torch.cuda.is_bf16_supported(),
+        gradient_checkpointing=True,
         report_to=report_to,
         dataset_text_field="text",
         max_length=args.seq_len,
