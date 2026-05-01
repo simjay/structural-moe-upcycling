@@ -49,6 +49,7 @@ def main():
     parser.add_argument("--lora-r", type=int, default=16)
     parser.add_argument("--output", default="/tmp/moe-checkpoints")
     parser.add_argument("--no-wandb", action="store_true")
+    parser.add_argument("--dataset-seed", type=int, default=1))
     args = parser.parse_args()
 
     print(f"=== Training {args.run_name} ===\n")
@@ -84,6 +85,7 @@ def main():
 
     print("Loading dataset...")
     ds = load_dataset(DATASET, split=DATASET_SPLIT, streaming=True)
+    ds = ds.shuffle(seed=args.dataset_seed, buffer_size=1000)
     ds = ds.map(format_sample)
 
     report_to = "none" if args.no_wandb else "wandb"
