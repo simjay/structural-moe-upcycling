@@ -49,7 +49,7 @@ def main():
     parser.add_argument("--lora-r", type=int, default=16)
     parser.add_argument("--output", default="/tmp/moe-checkpoints")
     parser.add_argument("--no-wandb", action="store_true")
-    parser.add_argument("--dataset-seed", type=int, default=1))
+    parser.add_argument("--dataset-seed", type=int, default=1)
     args = parser.parse_args()
 
     print(f"=== Training {args.run_name} ===\n")

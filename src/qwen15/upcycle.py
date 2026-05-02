@@ -13,6 +13,7 @@ Methods:
 import argparse
 import math
 import copy
+import gc
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
@@ -191,6 +192,8 @@ def init_direct(dense, moe, cfg, output_dir, tokenizer, save=True):
             dl.mlp.gate_proj.weight, dl.mlp.up_proj.weight,
             dl.mlp.down_proj.weight, experts,
             n_experts, expert_dim, dense_dim)
+    del dense
+    
     if save:
         print(f"Saving direct init model to {output_dir}...")
         moe.save_pretrained(output_dir)
@@ -213,25 +216,38 @@ def init_gaussian(dense, moe, cfg, output_dir_base, tokenizer, sigmas):
     """
     init_direct(dense, moe, cfg, None, None, save=False)
 
-    expert_state_backups = [
-        copy.deepcopy(moe.model.layers[i].mlp.experts.state_dict()) 
-        for i in range(cfg["n_layers"])
-    ]
-
+    print(f"Generating random noise")
+    addends = []
+    for i in range(cfg["n_layers"]):
+        experts = moe.model.layers[i].mlp.experts
+        std_gate = experts.gate_up_proj.abs().mean()
+        std_down = experts.down_proj.abs().mean()
+        noise_gate = torch.randn_like(experts.gate_up_proj) * std_gate
+        noise_down = torch.randn_like(experts.down_proj) * std_down
+        addends.append((noise_gate, noise_down))
     for sigma in sigmas:
-        print(f"--- Applying Gaussian Init (sigma={sigma}) ---")
+        print(f"Applying Gaussian Init (sigma={sigma})")
         for i in range(cfg["n_layers"]):
-            experts = moe.model.layers[i].mlp.experts
-            experts.load_state_dict(expert_state_backups[i])
-            
-            std_gate = sigma * experts.gate_up_proj.abs().mean()
-            experts.gate_up_proj.add_(torch.randn_like(experts.gate_up_proj) * std_gate)
-            std_down = sigma * experts.down_proj.abs().mean()
-            experts.down_proj.add_(torch.randn_like(experts.down_proj) * std_down)
+            noise_gate, noise_down = addends[i]
+            experts.gate_up_proj.add_(sigma * noise_gate)
+            experts.down_proj.add_(sigma * noise_down)
 
         out_path = f"{output_dir_base}_sigma_{sigma}"
+        print(f"Saving Gaussian model to {out_path}...")
         moe.save_pretrained(out_path)
         tokenizer.save_pretrained(out_path)
+
+        # Undo the perturbation to reset for the next sigma in the sweep
+        print(f"Resetting weights for next trial...")
+        for i in range(cfg["n_layers"]):
+            experts = moe.model.layers[i].mlp.experts
+            noise_gate, noise_down = layer_noises[i]
+            
+            experts.gate_up_proj.sub_(noise_gate)
+            experts.down_proj.sub_(noise_down)
+            
+    del addends
+    gc.collect()
 
 def init_svd(dense, moe, cfg, output_dir_base, tokenizer, ks):
     """Initialize experts via SVD decomposition with residual sampling.
@@ -323,7 +339,6 @@ def upcycle(method, output_dir, sigmas, ks):
     # Calculate params for logging before deletion
     params = sum(p.numel() for p in moe.parameters())
     
-    del dense
     del moe
     
     print(f"MoE total params: {params:,} ({params / 1e9:.1f}B)")
