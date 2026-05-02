@@ -12,8 +12,6 @@ Methods:
 
 import argparse
 import math
-import copy
-import gc
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
@@ -86,6 +84,56 @@ def _partition_and_replicate(gate_w, up_w, down_w, experts, n_experts,
             experts.gate_up_proj[e, actual:expert_dim].zero_()
             experts.gate_up_proj[e, expert_dim + actual:].zero_()
             experts.down_proj[e, :, actual:].zero_()
+
+
+def init_direct(dense, moe, cfg):
+    """Initialize experts by partitioning dense FFN row-slices and replicating.
+
+    All 60 experts receive identical copies (cycled across 4 partitions).
+
+    Args:
+        dense: The dense source model.
+        moe: The MoE target model.
+        cfg: Dict with keys ``n_layers``, ``n_experts``, ``expert_dim``,
+            ``dense_dim``.
+    """
+    n_layers = cfg["n_layers"]
+    n_experts = cfg["n_experts"]
+    expert_dim = cfg["expert_dim"]
+    dense_dim = cfg["dense_dim"]
+
+    for i in range(n_layers):
+        dl = dense.model.layers[i]
+        experts = moe.model.layers[i].mlp.experts
+        _partition_and_replicate(
+            dl.mlp.gate_proj.weight, dl.mlp.up_proj.weight,
+            dl.mlp.down_proj.weight, experts,
+            n_experts, expert_dim, dense_dim)
+
+
+def init_gaussian(dense, moe, cfg, sigma=0.01):
+    """Initialize experts via partition + replicate, then add Gaussian noise.
+
+    First applies the direct-copy initialization, then perturbs each expert's
+    weights with i.i.d. Gaussian noise scaled by the mean absolute weight
+    magnitude.
+
+    Args:
+        dense: The dense source model.
+        moe: The MoE target model.
+        cfg: Dict with keys ``n_layers``, ``n_experts``, ``expert_dim``,
+            ``dense_dim``.
+        sigma: Noise scale relative to mean absolute weight magnitude.
+            Defaults to 0.01.
+    """
+    init_direct(dense, moe, cfg)
+
+    for i in range(cfg["n_layers"]):
+        experts = moe.model.layers[i].mlp.experts
+        std = sigma * experts.gate_up_proj.abs().mean()
+        experts.gate_up_proj.add_(torch.randn_like(experts.gate_up_proj) * std)
+        std = sigma * experts.down_proj.abs().mean()
+        experts.down_proj.add_(torch.randn_like(experts.down_proj) * std)
 
 
 def _svd_init_matrix(W, expert_dim, n_experts, k):
@@ -169,87 +217,8 @@ def _svd_init_down_matrix(W, expert_dim, n_experts, k):
 
     return result
 
-def init_direct(dense, moe, cfg, output_dir, tokenizer, save=True):
-    """Initialize experts by partitioning dense FFN row-slices and replicating.
 
-    All 60 experts receive identical copies (cycled across 4 partitions).
-
-    Args:
-        dense: The dense source model.
-        moe: The MoE target model.
-        cfg: Dict with keys ``n_layers``, ``n_experts``, ``expert_dim``,
-            ``dense_dim``.
-    """
-    n_layers = cfg["n_layers"]
-    n_experts = cfg["n_experts"]
-    expert_dim = cfg["expert_dim"]
-    dense_dim = cfg["dense_dim"]
-
-    for i in range(n_layers):
-        dl = dense.model.layers[i]
-        experts = moe.model.layers[i].mlp.experts
-        _partition_and_replicate(
-            dl.mlp.gate_proj.weight, dl.mlp.up_proj.weight,
-            dl.mlp.down_proj.weight, experts,
-            n_experts, expert_dim, dense_dim)
-    del dense
-    
-    if save:
-        print(f"Saving direct init model to {output_dir}...")
-        moe.save_pretrained(output_dir)
-        tokenizer.save_pretrained(output_dir)
-
-def init_gaussian(dense, moe, cfg, output_dir_base, tokenizer, sigmas):
-    """Initialize experts via partition + replicate, then add Gaussian noise.
-
-    First applies the direct-copy initialization, then perturbs each expert's
-    weights with i.i.d. Gaussian noise scaled by the mean absolute weight
-    magnitude.
-
-    Args:
-        dense: The dense source model.
-        moe: The MoE target model.
-        cfg: Dict with keys ``n_layers``, ``n_experts``, ``expert_dim``,
-            ``dense_dim``.
-        sigma: Noise scale relative to mean absolute weight magnitude.
-            Defaults to 0.01.
-    """
-    init_direct(dense, moe, cfg, None, None, save=False)
-
-    print(f"Generating random noise")
-    addends = []
-    for i in range(cfg["n_layers"]):
-        experts = moe.model.layers[i].mlp.experts
-        std_gate = experts.gate_up_proj.abs().mean()
-        std_down = experts.down_proj.abs().mean()
-        noise_gate = torch.randn_like(experts.gate_up_proj) * std_gate
-        noise_down = torch.randn_like(experts.down_proj) * std_down
-        addends.append((noise_gate, noise_down))
-    for sigma in sigmas:
-        print(f"Applying Gaussian Init (sigma={sigma})")
-        for i in range(cfg["n_layers"]):
-            noise_gate, noise_down = addends[i]
-            experts.gate_up_proj.add_(sigma * noise_gate)
-            experts.down_proj.add_(sigma * noise_down)
-
-        out_path = f"{output_dir_base}_sigma_{sigma}"
-        print(f"Saving Gaussian model to {out_path}...")
-        moe.save_pretrained(out_path)
-        tokenizer.save_pretrained(out_path)
-
-        # Undo the perturbation to reset for the next sigma in the sweep
-        print(f"Resetting weights for next trial...")
-        for i in range(cfg["n_layers"]):
-            experts = moe.model.layers[i].mlp.experts
-            noise_gate, noise_down = layer_noises[i]
-            
-            experts.gate_up_proj.sub_(noise_gate)
-            experts.down_proj.sub_(noise_down)
-            
-    del addends
-    gc.collect()
-
-def init_svd(dense, moe, cfg, output_dir_base, tokenizer, ks):
+def init_svd(dense, moe, cfg, k=256):
     """Initialize experts via SVD decomposition with residual sampling.
 
     For each dense FFN matrix, the top-k singular values form a shared
@@ -264,29 +233,27 @@ def init_svd(dense, moe, cfg, output_dir_base, tokenizer, ks):
             Defaults to 256.
     """
     n_layers = cfg["n_layers"]
-    expert_dim = cfg["expert_dim"]
     n_experts = cfg["n_experts"]
+    expert_dim = cfg["expert_dim"]
 
-    for k in ks:
-        print(f"--- Applying SVD Init (k={k}) ---")
-        for i in range(n_layers):
-            dl = dense.model.layers[i]
-            experts = moe.model.layers[i].mlp.experts
+    for i in range(n_layers):
+        print(f"  SVD init layer {i}/{n_layers}...")
+        dl = dense.model.layers[i]
+        experts = moe.model.layers[i].mlp.experts
 
-            gate_init = _svd_init_matrix(dl.mlp.gate_proj.weight, expert_dim, n_experts, k)
-            up_init = _svd_init_matrix(dl.mlp.up_proj.weight, expert_dim, n_experts, k)
-            down_init = _svd_init_down_matrix(dl.mlp.down_proj.weight, expert_dim, n_experts, k)
+        gate_init = _svd_init_matrix(
+            dl.mlp.gate_proj.weight, expert_dim, n_experts, k)
+        up_init = _svd_init_matrix(
+            dl.mlp.up_proj.weight, expert_dim, n_experts, k)
+        down_init = _svd_init_down_matrix(
+            dl.mlp.down_proj.weight, expert_dim, n_experts, k)
 
-            experts.gate_up_proj[:, :expert_dim, :].copy_(gate_init)
-            experts.gate_up_proj[:, expert_dim:, :].copy_(up_init)
-            experts.down_proj.copy_(down_init)
-
-        out_path = f"{output_dir_base}_k_{k}"
-        moe.save_pretrained(out_path)
-        tokenizer.save_pretrained(out_path)
+        experts.gate_up_proj[:, :expert_dim, :].copy_(gate_init)
+        experts.gate_up_proj[:, expert_dim:, :].copy_(up_init)
+        experts.down_proj.copy_(down_init)
 
 
-def upcycle(method, output_dir, sigmas, ks):
+def upcycle(method, output_dir, sigma=0.01, k=256):
     """Build an MoE model from the dense checkpoint using the given init method.
 
     Loads the dense model, creates an empty MoE shell, copies all shared
@@ -305,8 +272,15 @@ def upcycle(method, output_dir, sigmas, ks):
     moe_cfg = AutoConfig.from_pretrained(MOE_REF)
     moe_cfg.shared_expert_intermediate_size = dense_cfg.intermediate_size
 
+    print(f"Dense: hidden={dense_cfg.hidden_size}, ffn={dense_cfg.intermediate_size}, "
+          f"layers={dense_cfg.num_hidden_layers}")
+    print(f"MoE:   experts={moe_cfg.num_experts}x{moe_cfg.moe_intermediate_size}, "
+          f"shared={moe_cfg.shared_expert_intermediate_size}, "
+          f"active={moe_cfg.num_experts_per_tok}/tok\n")
+
     print("Loading dense model...")
-    dense = AutoModelForCausalLM.from_pretrained(DENSE_MODEL, dtype=torch.bfloat16, device_map="cpu")
+    dense = AutoModelForCausalLM.from_pretrained(
+        DENSE_MODEL, dtype=torch.bfloat16, device_map="cpu")
     tokenizer = AutoTokenizer.from_pretrained(DENSE_MODEL)
 
     print("Creating empty MoE model (bf16)...")
@@ -322,25 +296,29 @@ def upcycle(method, output_dir, sigmas, ks):
         dense_dim=dense_cfg.intermediate_size,
     )
 
-    print("Copying shared weights...")
+    print("Copying shared weights (attention, embeddings, norms, shared expert)...")
     with torch.no_grad():
         _copy_shared_weights(dense, moe, cfg["n_layers"])
 
-        print(f"Initializing and Saving experts ({method})...")
+        print(f"Initializing experts ({method})...")
         if method == "direct":
-            init_direct(dense, moe, cfg, output_dir, tokenizer)
+            init_direct(dense, moe, cfg)
         elif method == "gaussian":
-            init_gaussian(dense, moe, cfg, output_dir, tokenizer, sigmas)
+            init_gaussian(dense, moe, cfg, sigma=sigma)
         elif method == "svd":
-            init_svd(dense, moe, cfg, output_dir, tokenizer, ks)
+            init_svd(dense, moe, cfg, k=k)
         else:
             raise ValueError(f"Unknown method: {method}")
 
-    # Calculate params for logging before deletion
+    del dense
+
+    print(f"\nSaving to {output_dir}...")
+    moe.save_pretrained(output_dir)
+    tokenizer.save_pretrained(output_dir)
+
     params = sum(p.numel() for p in moe.parameters())
-    
+
     del moe
-    
     print(f"MoE total params: {params:,} ({params / 1e9:.1f}B)")
     print("Done.")
 
@@ -350,14 +328,13 @@ def main():
     parser.add_argument("--method", required=True,
                         choices=["direct", "gaussian", "svd"])
     parser.add_argument("--output", required=True, help="Output directory")
-    parser.add_argument("--sigma", type=float, nargs="+", default=[0.01],
-                        help="Noise scale(s) for gaussian method (space-separated list)")
-    parser.add_argument("--k", type=int, nargs="+", default=[256],
-                        help="Number of structural singular values for svd method (space-separated list)")
+    parser.add_argument("--sigma", type=float, default=0.01,
+                        help="Noise scale for gaussian method")
+    parser.add_argument("--k", type=int, default=256,
+                        help="Number of structural singular values for svd method")
     args = parser.parse_args()
+    upcycle(args.method, args.output, sigma=args.sigma, k=args.k)
 
-
-    upcycle(args.method, args.output, args.sigma, args.k)
 
 if __name__ == "__main__":
     main()
