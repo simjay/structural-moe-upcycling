@@ -25,6 +25,60 @@ import wandb
 DATASET = "nvidia/OpenMathReasoning"
 DATASET_SPLIT = "cot"
 
+class ExpertUsageTracker:
+    def __init__(self, num_experts, top_k=2):
+        self.num_experts = num_experts
+        self.top_k = top_k
+        self.counts = torch.zeros(num_experts, device="cuda")
+
+    def hook_fn(self, module, input, output):
+        if isinstance(output, torch.Tensor):
+            logits = output
+            # Get the top-k expert indices
+            _, indices = torch.topk(logits, self.top_k, dim=-1)
+            
+            # Flatten indices to a 1D tensor
+            flat_indices = indices.flatten()
+            
+            # Use minlength to ensure the output has 60 bins
+            # AND slice/pad just in case bincount behaves oddly with empty inputs
+            batch_counts = torch.bincount(flat_indices, minlength=self.num_experts)
+            
+            # If bincount returns more than 60 (shouldn't happen), we slice it
+            # to match self.counts (size 60)
+            self.counts += batch_counts[:self.num_experts]
+
+    def reset(self):
+        self.counts.zero_()
+
+    def get_probabilities(self):
+        total = self.counts.sum()
+        if total == 0:
+            return torch.zeros(self.num_experts).numpy()
+        return (self.counts / total).cpu().detach().numpy()
+
+
+class ExpertLoggingCallback(TrainerCallback):
+    def __init__(self, tracker):
+        self.tracker = tracker
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        if state.is_world_process_zero:
+            probs = self.tracker.get_probabilities()
+            
+            # Create a bar chart for WandB
+            data = [[i, p] for i, p in enumerate(probs)]
+            table = wandb.Table(data=data, columns=["expert_id", "usage_fraction"])
+            
+            wandb.log({
+                "expert_usage_dist": wandb.plot.bar(table, "expert_id", "usage_fraction", title="Expert Usage Distribution"),
+                "max_expert_load": probs.max(),
+                "min_expert_load": probs.min()
+            }, step=state.global_step)
+            
+            # Optional: Reset tracker after logging to see "instantaneous" usage
+            # self.tracker.reset()
+
 def format_sample(sample):
     """Format a dataset sample as a single training string.
 
@@ -74,6 +128,24 @@ def main():
       lora_dropout = 0,
       use_gradient_checkpointing = "unsloth", 
     )
+
+    num_experts = model.config.num_experts
+    tracker = ExpertUsageTracker(num_experts, top_k=model.config.num_experts_per_tok)
+    
+    # Attach to the gate specifically
+    hooks_count = 0
+    for name, module in model.named_modules():
+        # Qwen2Moe uses 'gate' for the router
+        if name.endswith(".gate"):
+            module.register_forward_hook(tracker.hook_fn)
+            hooks_count += 1
+    
+    print(f"Successfully attached {hooks_count} hooks to MoE routers.")
+    
+    # Attach to every MoE layer's MLP (the part that handles routing)
+    for name, module in model.named_modules():
+        if "mlp" in name.lower() and hasattr(module, "gate"):
+            module.register_forward_hook(tracker.hook_fn)
     
     # Manually enable training for the router/gate modules
     for name, param in model.named_parameters():
@@ -114,6 +186,7 @@ def main():
         processing_class=tokenizer,
         train_dataset=ds,
         args=training_args,
+        callbacks=[ExpertLoggingCallback(tracker)]
     )
 
 
