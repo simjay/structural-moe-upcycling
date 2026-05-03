@@ -271,9 +271,9 @@ def main():
     parser.add_argument("--output", required=True, help="Output directory")
     parser.add_argument("--sigma", type=float, default=0.1,
                         help="Noise scale for gaussian method")
-    parser.add_argument("--k", type=int, default=8,
+    parser.add_argument("--k", type=int, default=128,
                         help="Number of structural singular values for svd method")
-    parser.add_argument("--svd-scale", type=float, default=0.5,
+    parser.add_argument("--svd-scale", type=float, default=0.1,
                         help="Noise scale for SVD residual perturbation")
     args = parser.parse_args()
     upcycle(args.method, args.output, sigma=args.sigma, k=args.k,

@@ -141,8 +141,8 @@ python3 -m src.eval.gsm8k --model /tmp/moe-checkpoints/qwen-svd/final
 | --- | --- |
 | Trained components | expert FFNs + router only (attention frozen) |
 | Gaussian sigma | 0.1 |
-| SVD k (structural singular values) | 8 |
-| SVD residual noise scale | 0.5 |
+| SVD k (structural singular values) | 128 |
+| SVD residual noise scale | 0.1 |
 | Max steps | 300 |
 | Batch size | 1 (x 4 gradient accumulation = effective 4) |
 | Learning rate | 1e-5, cosine schedule, 30 warmup steps |
@@ -160,9 +160,9 @@ All metrics are logged to wandb. Compare the six runs on:
 | Metric | Frequency | What it shows |
 | --- | --- | --- |
 | `eval/loss` | every 50 steps | Generalization to unseen math — primary convergence metric |
-| `router/mean_entropy` | every 10 steps | Expert diversification; higher = more uniform expert usage |
+| `expert/mean_cosine_similarity` | every 10 steps | Expert divergence; lower = more specialized experts |
 | `train/loss` | every 10 steps | Training set fit (expect similar across methods) |
-| `gsm8k/accuracy` | end of training | Task performance on 200 GSM8K test problems |
+| `gsm8k/accuracy` | end of training | Task performance on 200 GSM8K test problems (in run summary) |
 
 ### Project structure
 

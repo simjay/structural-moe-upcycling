@@ -5,8 +5,8 @@ Loads a model saved by ``src.mixtral.upcycle`` and trains only:
 - Router (mlp.gate) — full fine-tuning
 
 Attention projections are frozen to isolate the effect of expert initialization.
-Logs training loss and router entropy to wandb for comparing convergence across
-initialization methods.
+Logs training loss and expert weight divergence to wandb for comparing
+convergence across initialization methods.
 
 Example:
     .. code-block:: bash
@@ -26,41 +26,37 @@ DATASET = "nvidia/OpenMathReasoning"
 DATASET_SPLIT = "cot"
 
 
-class RouterEntropyCallback(TrainerCallback):
-    """Log mean router entropy to wandb during training.
+class ExpertDivergenceCallback(TrainerCallback):
+    """Log mean pairwise cosine similarity between experts to wandb.
 
-    Registers forward hooks on all router (mlp.gate) modules to capture
-    router logits and compute the entropy of the softmax distribution.
-    Higher entropy = more uniform expert usage; lower = router collapse.
+    At each logging step, computes the average cosine similarity between
+    all pairs of expert weight vectors across all layers. Lower values
+    indicate greater expert specialization/divergence.
     """
 
     def __init__(self, model):
-        self._entropy_values = []
-        self._hooks = []
-        for name, module in model.named_modules():
-            if name.endswith("mlp.gate") and hasattr(module, "weight"):
-                hook = module.register_forward_hook(self._hook_fn)
-                self._hooks.append(hook)
+        self._model = model
 
-    def _hook_fn(self, module, input, output):
-        if isinstance(output, tuple):
-            logits = output[0]
-        else:
-            logits = output
-        probs = F.softmax(logits.float(), dim=-1)
-        entropy = -(probs * probs.clamp(min=1e-8).log()).sum(dim=-1).mean()
-        self._entropy_values.append(entropy.item())
+    @torch.no_grad()
+    def _compute_divergence(self):
+        similarities = []
+        for name, param in self._model.named_parameters():
+            if "experts.gate_up_proj" in name and param.dim() == 3:
+                n_experts = param.shape[0]
+                flat = param.view(n_experts, -1).float()
+                normed = F.normalize(flat, dim=1)
+                sim_matrix = normed @ normed.T
+                mask = torch.triu(torch.ones(n_experts, n_experts, device=sim_matrix.device), diagonal=1).bool()
+                similarities.append(sim_matrix[mask].mean().item())
+        if similarities:
+            return sum(similarities) / len(similarities)
+        return None
 
     def on_log(self, args, state, control, logs=None, **kwargs):
-        if self._entropy_values and logs is not None:
-            mean_entropy = sum(self._entropy_values) / len(self._entropy_values)
-            logs["router/mean_entropy"] = mean_entropy
-            self._entropy_values.clear()
-
-    def remove_hooks(self):
-        for hook in self._hooks:
-            hook.remove()
-        self._hooks.clear()
+        if logs is not None:
+            sim = self._compute_divergence()
+            if sim is not None:
+                logs["expert/mean_cosine_similarity"] = sim
 
 
 def format_sample(sample):
@@ -102,7 +98,7 @@ def main():
     total = sum(p.numel() for p in model.parameters())
     print(f"trainable params: {trainable:,} || all params: {total:,} || trainable%: {100 * trainable / total:.2f}")
 
-    entropy_callback = RouterEntropyCallback(model)
+    divergence_callback = ExpertDivergenceCallback(model)
 
     print("Loading dataset...")
     ds = load_dataset(DATASET, split=DATASET_SPLIT, streaming=True)
@@ -144,13 +140,12 @@ def main():
         train_dataset=ds,
         eval_dataset=eval_ds,
         args=training_args,
-        callbacks=[entropy_callback],
+        callbacks=[divergence_callback],
     )
 
     print(f"\nTraining for {args.max_steps} steps...")
     result = trainer.train()
 
-    entropy_callback.remove_hooks()
 
     print(f"\nFinal loss: {result.training_loss:.4f}")
     print(f"Steps completed: {result.global_step}")
@@ -159,14 +154,19 @@ def main():
     trainer.save_model(f"{args.output}/{args.run_name}/final")
 
     print("\n=== GSM8K Evaluation ===")
-    from src.eval.gsm8k import evaluate, extract_answer, extract_ground_truth
+    from src.eval.gsm8k import evaluate
     gsm8k_ds = load_dataset("openai/gsm8k", "main", split="test")
     gsm8k_ds = gsm8k_ds.select(range(min(200, len(gsm8k_ds))))
     print(f"Evaluating on {len(gsm8k_ds)} problems...")
     model.eval()
     accuracy, correct, total = evaluate(model, tokenizer, gsm8k_ds)
     print(f"GSM8K Accuracy: {correct}/{total} = {100*accuracy:.1f}%")
-    trainer.log({"gsm8k/accuracy": accuracy, "gsm8k/correct": correct, "gsm8k/total": total})
+
+    import wandb
+    if wandb.run is not None:
+        wandb.run.summary["gsm8k/accuracy"] = accuracy
+        wandb.run.summary["gsm8k/correct"] = correct
+        wandb.run.summary["gsm8k/total"] = total
 
     print("Done.")
 
