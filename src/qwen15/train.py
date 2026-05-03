@@ -28,16 +28,6 @@ DATASET = "nvidia/OpenMathReasoning"
 DATASET_SPLIT = "cot"
 
 
-class FilterMetricsCallback(TrainerCallback):
-    """Remove redundant metrics that are identical across runs."""
-    REMOVE_KEYS = {"epoch", "learning_rate", "total_flos"}
-
-    def on_log(self, args, state, control, logs=None, **kwargs):
-        if logs is not None:
-            for key in self.REMOVE_KEYS:
-                logs.pop(key, None)
-
-
 class ExpertDivergenceCallback(TrainerCallback):
     """Log mean pairwise cosine similarity between experts to wandb.
 
@@ -65,10 +55,14 @@ class ExpertDivergenceCallback(TrainerCallback):
         return None
 
     def on_log(self, args, state, control, logs=None, **kwargs):
-        if logs is not None:
-            sim = self._compute_divergence()
-            if sim is not None:
-                logs["expert/mean_cosine_similarity"] = sim
+        import wandb
+        sim = self._compute_divergence()
+        if sim is not None and wandb.run is not None:
+            wandb.log(
+                {"expert/mean_cosine_similarity": sim},
+                step=state.global_step,
+                commit=False,
+            )
 
 
 def format_sample(sample):
@@ -156,7 +150,7 @@ def main():
         train_dataset=ds,
         eval_dataset=eval_ds,
         args=training_args,
-        callbacks=[divergence_callback, FilterMetricsCallback()],
+        callbacks=[divergence_callback],
     )
 
     print(f"\nTraining for {args.max_steps} steps...")
@@ -173,7 +167,9 @@ def main():
     accuracy, correct, total = evaluate(model, tokenizer, gsm8k_ds)
     print(f"GSM8K Accuracy: {correct}/{total} = {100*accuracy:.1f}%")
 
-    trainer.log({"gsm8k/accuracy": accuracy, "gsm8k/correct": correct, "gsm8k/total": total})
+    import wandb
+    if wandb.run is not None:
+        wandb.log({"gsm8k/accuracy": accuracy, "gsm8k/correct": correct, "gsm8k/total": total})
 
     results_dir = f"{args.output}/{args.run_name}"
     os.makedirs(results_dir, exist_ok=True)
