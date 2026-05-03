@@ -15,6 +15,8 @@ Example:
 """
 
 import argparse
+import json
+import os
 
 import torch
 import torch.nn.functional as F
@@ -24,6 +26,16 @@ from trl import SFTTrainer, SFTConfig
 
 DATASET = "nvidia/OpenMathReasoning"
 DATASET_SPLIT = "cot"
+
+
+class FilterMetricsCallback(TrainerCallback):
+    """Remove redundant metrics that are identical across runs."""
+    REMOVE_KEYS = {"epoch", "learning_rate", "total_flos"}
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        if logs is not None:
+            for key in self.REMOVE_KEYS:
+                logs.pop(key, None)
 
 
 class ExpertDivergenceCallback(TrainerCallback):
@@ -72,6 +84,7 @@ def main():
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--lr", type=float, default=1e-5)
     parser.add_argument("--seq-len", type=int, default=2048)
+    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output", default="/tmp/moe-checkpoints")
     parser.add_argument("--no-wandb", action="store_true")
     args = parser.parse_args()
@@ -104,7 +117,7 @@ def main():
 
     print("Loading dataset...")
     ds = load_dataset(DATASET, split=DATASET_SPLIT, streaming=True)
-    ds = ds.shuffle(seed=42, buffer_size=10_000)
+    ds = ds.shuffle(seed=args.seed, buffer_size=10_000)
     ds = ds.map(format_sample)
 
     print("Loading eval dataset (GSM8K train split)...")
@@ -126,6 +139,7 @@ def main():
         save_strategy="no",
         eval_strategy="steps",
         eval_steps=50,
+        seed=args.seed,
         optim="adamw_8bit",
         bf16=torch.cuda.is_bf16_supported(),
         fp16=not torch.cuda.is_bf16_supported(),
@@ -142,33 +156,43 @@ def main():
         train_dataset=ds,
         eval_dataset=eval_ds,
         args=training_args,
-        callbacks=[divergence_callback],
+        callbacks=[divergence_callback, FilterMetricsCallback()],
     )
 
     print(f"\nTraining for {args.max_steps} steps...")
     result = trainer.train()
 
-
     print(f"\nFinal loss: {result.training_loss:.4f}")
     print(f"Steps completed: {result.global_step}")
-
-    print(f"Saving final model to {args.output}/{args.run_name}/final...")
-    trainer.save_model(f"{args.output}/{args.run_name}/final")
 
     print("\n=== GSM8K Evaluation ===")
     from src.eval.gsm8k import evaluate
     gsm8k_ds = load_dataset("openai/gsm8k", "main", split="test")
-    gsm8k_ds = gsm8k_ds.select(range(min(200, len(gsm8k_ds))))
-    print(f"Evaluating on {len(gsm8k_ds)} problems...")
+    print(f"Evaluating on {len(gsm8k_ds)} problems (full test set)...")
     model.eval()
     accuracy, correct, total = evaluate(model, tokenizer, gsm8k_ds)
     print(f"GSM8K Accuracy: {correct}/{total} = {100*accuracy:.1f}%")
 
-    import wandb
-    if wandb.run is not None:
-        wandb.run.summary["gsm8k/accuracy"] = accuracy
-        wandb.run.summary["gsm8k/correct"] = correct
-        wandb.run.summary["gsm8k/total"] = total
+    trainer.log({"gsm8k/accuracy": accuracy, "gsm8k/correct": correct, "gsm8k/total": total})
+
+    results_dir = f"{args.output}/{args.run_name}"
+    os.makedirs(results_dir, exist_ok=True)
+    results = {
+        "run_name": args.run_name,
+        "seed": args.seed,
+        "gsm8k_accuracy": accuracy,
+        "gsm8k_correct": correct,
+        "gsm8k_total": total,
+        "training_loss": result.training_loss,
+        "steps": result.global_step,
+    }
+    results_path = os.path.join(results_dir, "results.json")
+    with open(results_path, "w") as f:
+        json.dump(results, f, indent=2)
+    print(f"Results saved to {results_path}")
+
+    print(f"Saving final model to {results_dir}/final...")
+    trainer.save_model(f"{results_dir}/final")
 
     print("Done.")
 
