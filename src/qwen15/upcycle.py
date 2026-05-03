@@ -15,6 +15,8 @@ import math
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
+import torch.nn as nn
+
 
 DENSE_MODEL = "Qwen/Qwen1.5-1.8B"
 MOE_REF = "Qwen/Qwen1.5-MoE-A2.7B"
@@ -85,36 +87,6 @@ def _partition_and_replicate(gate_w, up_w, down_w, experts, n_experts,
             experts.gate_up_proj[e, expert_dim + actual:].zero_()
             experts.down_proj[e, :, actual:].zero_()
 
-def init_random(dense, moe, cfg):
-    """Initialize experts with random weights using fused tensor access.
-
-    Args:
-        dense: The dense source model (unused).
-        moe: The MoE target model.
-        cfg: Dict with key ``n_layers``.
-    """
-    n_layers = cfg["n_layers"]
-
-    print("Initializing experts with random noise (Cold Start)...")
-
-    for i in range(n_layers):
-        # Access the experts object directly as seen in your init_gaussian snippet
-        experts = moe.model.layers[i].mlp.experts
-        
-        # Completely overwrite the fused weights with random values
-        # We use a standard deviation of 0.02, which is typical for Transformer initialization
-        nn.init.normal_(experts.gate_up_proj, mean=0.0, std=0.02)
-        nn.init.normal_(experts.down_proj, mean=0.0, std=0.02)
-        
-        # Also randomize the router/gate for a true baseline
-        # In Qwen1.5 MoE, the gate is usually at moe.model.layers[i].mlp.gate
-        if hasattr(moe.model.layers[i].mlp, 'gate'):
-            nn.init.normal_(moe.model.layers[i].mlp.gate.weight, mean=0.0, std=0.02)
-
-        if hasattr(moe.model.layers[i].mlp, 'shared_expert_gate'):
-            nn.init.normal_(moe.model.layers[i].mlp.shared_expert_gate.weight, mean=0.0, std=0.02)
-
-    print("Expert randomization complete.")
 
 def init_direct(dense, moe, cfg):
     """Initialize experts by partitioning dense FFN row-slices and replicating.
@@ -141,6 +113,52 @@ def init_direct(dense, moe, cfg):
             n_experts, expert_dim, dense_dim)
 
 
+def init_random(dense, moe, cfg):
+    """Initialize experts with random weights using fused tensor access.
+
+    Args:
+        dense: The dense source model (unused).
+        moe: The MoE target model.
+        cfg: Dict with key ``n_layers``.
+    """
+    n_layers = cfg["n_layers"]
+
+    print("Initializing experts with random noise (Cold Start)...")
+
+    for i in range(n_layers):
+        std = 1
+        # Access the experts object directly as seen in your init_gaussian snippet
+        experts = moe.model.layers[i].mlp.experts
+        
+        # Completely overwrite the fused weights with random values
+        # We use a standard deviation of 0.02, which is typical for Transformer initialization
+        nn.init.normal_(experts.gate_up_proj, mean=0.0, std=std)
+        nn.init.normal_(experts.down_proj, mean=0.0, std=std)
+        # Assuming you are inside a loop over n_layers
+        mlp = moe.model.layers[i].mlp
+
+        # List all attributes to see if 'gate' or 'shared_expert_gate' exist
+        print(f"Attributes in Layer {i} MLP: {dir(mlp)}")
+        # Also randomize the router/gate for a true baseline
+        # In Qwen1.5 MoE, the gate is usually at moe.model.layers[i].mlp.gate
+        if hasattr(moe.model.layers[i].mlp, 'gate'):
+            nn.init.normal_(moe.model.layers[i].mlp.gate.weight, mean=0.0, std=std)
+
+        # 1. Reset Shared Expert weights
+        if hasattr(mlp, 'shared_expert'):
+            nn.init.normal_(mlp.shared_expert.gate_proj.weight, std=std)
+            nn.init.normal_(mlp.shared_expert.down_proj.weight, std=std)
+
+        # 2. Reset the weighting gate for shared experts
+        if hasattr(mlp, 'shared_expert_gate'):
+            # If it's a single weighting scalar or a small linear layer
+            if isinstance(mlp.shared_expert_gate, torch.nn.Parameter):
+                nn.init.normal_(mlp.shared_expert_gate, std=std)
+            else:
+                # If it's a Linear layer
+                nn.init.normal_(mlp.shared_expert_gate.weight, std=std)
+    print("Expert randomization complete.")
+    
 def init_gaussian(dense, moe, cfg, sigma=0.01):
     """Initialize experts via partition + replicate, then add Gaussian noise.
 
@@ -166,7 +184,7 @@ def init_gaussian(dense, moe, cfg, sigma=0.01):
         experts.down_proj.add_(torch.randn_like(experts.down_proj) * std)
 
 
-def _svd_init_matrix(W, expert_dim, n_experts, k, sigma_scale):
+def _svd_init_matrix(W, expert_dim, n_experts, k):
     """Initialize expert matrices from a dense weight via SVD residual sampling.
 
     Decomposes W = U @ diag(S) @ Vt, keeps top-k singular values as the
@@ -182,46 +200,33 @@ def _svd_init_matrix(W, expert_dim, n_experts, k, sigma_scale):
     Returns:
         Tensor of shape ``(n_experts, expert_dim, in_features)``.
     """
-    Wf = W.float()
-    U, S, Vt = torch.linalg.svd(Wf, full_matrices=False)
+    U, S, Vt = torch.linalg.svd(W.float(), full_matrices=False)
+    # U: (out, min(out,in)), S: (min(out,in),), Vt: (min(out,in), in)
 
-    rank = min(k, len(S))
-
-    # Split spectrum
+    rank = min(k, len(S), expert_dim)
     S_struct = S[:rank]
-    S_res = S[rank:]
-
     U_struct = U[:, :rank]
     Vt_struct = Vt[:rank, :]
 
+    S_res = S[rank:]
     U_res = U[:, rank:]
-    Vt_res = Vt[rank:, :]
-
-    # Precompute shared structural component
-    W_struct_full = U_struct @ torch.diag(S_struct) @ Vt_struct
 
     result = torch.zeros(n_experts, expert_dim, W.shape[1], dtype=W.dtype)
 
     for e in range(n_experts):
-        if len(S_res) > 0:
-            # noise proportional to singular values (NOT index)
-            noise = torch.randn_like(S_res) * (sigma_scale * S_res)
-            S_e = S_res + noise
-            # S_e = torch.zeros_like(S_res)
+        noise = torch.randn_like(S_res) * S_res * 0.1
+        S_e = S_res + noise
 
-            W_res_full = U_res @ torch.diag(S_e) @ Vt_res
-        else:
-            W_res_full = 0.0
+        W_struct = U_struct[:expert_dim, :] @ torch.diag(S_struct) @ Vt_struct
+        n_res = min(expert_dim, U_res.shape[1])
+        W_res = U_res[:expert_dim, :n_res] @ torch.diag(S_e[:n_res]) @ Vt[rank:rank + n_res, :]
 
-        W_full = W_struct_full + W_res_full
-
-        # slice AFTER reconstruction
-        result[e] = W_full[:expert_dim, :].to(W.dtype)
+        result[e] = (W_struct + W_res).to(W.dtype)
 
     return result
 
 
-def _svd_init_down_matrix(W, expert_dim, n_experts, k, sigma_scale):
+def _svd_init_down_matrix(W, expert_dim, n_experts, k):
     """Initialize expert down_proj matrices via SVD residual sampling.
 
     Same approach as ``_svd_init_matrix`` but transposed for down_proj,
@@ -236,43 +241,32 @@ def _svd_init_down_matrix(W, expert_dim, n_experts, k, sigma_scale):
     Returns:
         Tensor of shape ``(n_experts, hidden, expert_dim)``.
     """
-    Wf = W.float()
-    U, S, Vt = torch.linalg.svd(Wf, full_matrices=False)
+    U, S, Vt = torch.linalg.svd(W.float(), full_matrices=False)
 
-    rank = min(k, len(S))
-
+    rank = min(k, len(S), expert_dim)
     S_struct = S[:rank]
-    S_res = S[rank:]
-
     U_struct = U[:, :rank]
     Vt_struct = Vt[:rank, :]
 
-    U_res = U[:, rank:]
+    S_res = S[rank:]
     Vt_res = Vt[rank:, :]
-
-    W_struct_full = U_struct @ torch.diag(S_struct) @ Vt_struct
 
     result = torch.zeros(n_experts, W.shape[0], expert_dim, dtype=W.dtype)
 
     for e in range(n_experts):
-        if len(S_res) > 0:
-            noise = torch.randn_like(S_res) * (sigma_scale * S_res)
-            S_e = S_res + noise
-            # S_e = torch.zeros_like(S_res)
+        noise = torch.randn_like(S_res) * S_res * 0.1
+        S_e = S_res + noise
 
-            W_res_full = U_res @ torch.diag(S_e) @ Vt_res
-        else:
-            W_res_full = 0.0
+        W_struct = U_struct @ torch.diag(S_struct) @ Vt_struct[:, :expert_dim]
+        n_res = min(expert_dim, Vt_res.shape[0])
+        W_res = U[:, rank:rank + n_res] @ torch.diag(S_e[:n_res]) @ Vt_res[:n_res, :expert_dim]
 
-        W_full = W_struct_full + W_res_full
-
-        # slice columns AFTER reconstruction
-        result[e] = W_full[:, :expert_dim].to(W.dtype)
+        result[e] = (W_struct + W_res).to(W.dtype)
 
     return result
 
 
-def init_svd(dense, moe, cfg, k=256, sigma_scale=0.1):
+def init_svd(dense, moe, cfg, k=256):
     """Initialize experts via SVD decomposition with residual sampling.
 
     For each dense FFN matrix, the top-k singular values form a shared
@@ -296,18 +290,18 @@ def init_svd(dense, moe, cfg, k=256, sigma_scale=0.1):
         experts = moe.model.layers[i].mlp.experts
 
         gate_init = _svd_init_matrix(
-            dl.mlp.gate_proj.weight, expert_dim, n_experts, k, sigma_scale)
+            dl.mlp.gate_proj.weight, expert_dim, n_experts, k)
         up_init = _svd_init_matrix(
-            dl.mlp.up_proj.weight, expert_dim, n_experts, k, sigma_scale)
+            dl.mlp.up_proj.weight, expert_dim, n_experts, k)
         down_init = _svd_init_down_matrix(
-            dl.mlp.down_proj.weight, expert_dim, n_experts, k, sigma_scale)
+            dl.mlp.down_proj.weight, expert_dim, n_experts, k)
 
         experts.gate_up_proj[:, :expert_dim, :].copy_(gate_init)
         experts.gate_up_proj[:, expert_dim:, :].copy_(up_init)
         experts.down_proj.copy_(down_init)
 
 
-def upcycle(method, output_dir, sigma=0.01, k=256, sigma_scale=0.1):
+def upcycle(method, output_dir, sigma=0.01, k=256):
     """Build an MoE model from the dense checkpoint using the given init method.
 
     Loads the dense model, creates an empty MoE shell, copies all shared
@@ -360,7 +354,9 @@ def upcycle(method, output_dir, sigma=0.01, k=256, sigma_scale=0.1):
         elif method == "gaussian":
             init_gaussian(dense, moe, cfg, sigma=sigma)
         elif method == "svd":
-            init_svd(dense, moe, cfg, k=k, sigma_scale=sigma_scale)
+            init_svd(dense, moe, cfg, k=k)
+        elif method == "random":
+            init_random(dense, moe, cfg)
         else:
             raise ValueError(f"Unknown method: {method}")
 
@@ -380,17 +376,14 @@ def upcycle(method, output_dir, sigma=0.01, k=256, sigma_scale=0.1):
 def main():
     parser = argparse.ArgumentParser(description="Dense-to-MoE upcycling")
     parser.add_argument("--method", required=True,
-                        choices=["direct", "gaussian", "svd"])
+                        choices=["direct", "gaussian", "svd", "random"])
     parser.add_argument("--output", required=True, help="Output directory")
     parser.add_argument("--sigma", type=float, default=0.01,
                         help="Noise scale for gaussian method")
     parser.add_argument("--k", type=int, default=256,
                         help="Number of structural singular values for svd method")
-    parser.add_argument("--sigma-scale", type=float, default=0.1,
-                        help="Scale of noise for svd method")
-                        
     args = parser.parse_args()
-    upcycle(args.method, args.output, sigma=args.sigma, k=args.k, sigma_scale=args.sigma_scale)
+    upcycle(args.method, args.output, sigma=args.sigma, k=args.k)
 
 
 if __name__ == "__main__":
