@@ -155,15 +155,14 @@ python3 -m src.eval.gsm8k --model /tmp/moe-checkpoints/qwen-svd/final
 
 ### Evaluation metrics
 
-All metrics are logged to wandb during training. Compare the six runs on:
+All metrics are logged to wandb. Compare the six runs on:
 
 | Metric | Frequency | What it shows |
 | --- | --- | --- |
 | `eval/loss` | every 50 steps | Generalization to unseen math — primary convergence metric |
 | `router/mean_entropy` | every 10 steps | Expert diversification; higher = more uniform expert usage |
 | `train/loss` | every 10 steps | Training set fit (expect similar across methods) |
-
-GSM8K accuracy (greedy generation) is evaluated on the final checkpoint at the end of each run.
+| `gsm8k/accuracy` | end of training | Task performance on 200 GSM8K test problems |
 
 ### Project structure
 

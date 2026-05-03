@@ -158,6 +158,16 @@ def main():
     print(f"Saving final model to {args.output}/{args.run_name}/final...")
     trainer.save_model(f"{args.output}/{args.run_name}/final")
 
+    print("\n=== GSM8K Evaluation ===")
+    from src.eval.gsm8k import evaluate, extract_answer, extract_ground_truth
+    gsm8k_ds = load_dataset("openai/gsm8k", "main", split="test")
+    gsm8k_ds = gsm8k_ds.select(range(min(200, len(gsm8k_ds))))
+    print(f"Evaluating on {len(gsm8k_ds)} problems...")
+    model.eval()
+    accuracy, correct, total = evaluate(model, tokenizer, gsm8k_ds)
+    print(f"GSM8K Accuracy: {correct}/{total} = {100*accuracy:.1f}%")
+    trainer.log({"gsm8k/accuracy": accuracy, "gsm8k/correct": correct, "gsm8k/total": total})
+
     print("Done.")
 
 
