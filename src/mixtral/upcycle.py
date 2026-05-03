@@ -82,7 +82,7 @@ def init_direct(dense, moe, cfg):
             experts.down_proj[e].copy_(down_w)
 
 
-def init_gaussian(dense, moe, cfg, sigma=1.0):
+def init_gaussian(dense, moe, cfg, sigma=0.1):
     """Initialize experts as direct copies, then add per-expert Gaussian noise.
 
     Applies the direct-copy initialization first, then perturbs each expert's
@@ -94,7 +94,7 @@ def init_gaussian(dense, moe, cfg, sigma=1.0):
         moe: The MoE target model.
         cfg: Dict with keys ``n_layers``, ``n_experts``, ``expert_dim``.
         sigma: Noise scale relative to mean absolute weight magnitude.
-            Defaults to 1.0.
+            Defaults to 0.1.
     """
     init_direct(dense, moe, cfg)
 
@@ -152,7 +152,7 @@ def _svd_init_matrix(W, n_experts, k, svd_scale):
     return result
 
 
-def init_svd(dense, moe, cfg, k=8, svd_scale=1.0):
+def init_svd(dense, moe, cfg, k=8, svd_scale=0.5):
     """Initialize experts via SVD decomposition with residual sampling.
 
     For each dense FFN matrix, the top-k singular values form a shared
@@ -168,7 +168,7 @@ def init_svd(dense, moe, cfg, k=8, svd_scale=1.0):
         cfg: Dict with keys ``n_layers``, ``n_experts``, ``expert_dim``.
         k: Number of top singular values to keep as structural.
             Defaults to 8.
-        svd_scale: Noise scale for residual perturbation. Defaults to 1.0.
+        svd_scale: Noise scale for residual perturbation. Defaults to 0.5.
     """
     n_layers = cfg["n_layers"]
     n_experts = cfg["n_experts"]
@@ -188,7 +188,7 @@ def init_svd(dense, moe, cfg, k=8, svd_scale=1.0):
         experts.down_proj.copy_(down_init)
 
 
-def upcycle(method, output_dir, sigma=1.0, k=8, svd_scale=1.0):
+def upcycle(method, output_dir, sigma=0.1, k=8, svd_scale=0.5):
     """Build Mixtral 8x7B from Mistral 7B using the given init method.
 
     Loads the dense model, creates an empty MoE shell, copies all shared
@@ -197,10 +197,10 @@ def upcycle(method, output_dir, sigma=1.0, k=8, svd_scale=1.0):
     Args:
         method: One of ``"direct"``, ``"gaussian"``, or ``"svd"``.
         output_dir: Path to save the upcycled model and tokenizer.
-        sigma: Noise scale for the gaussian method. Defaults to 1.0.
+        sigma: Noise scale for the gaussian method. Defaults to 0.1.
         k: Number of structural singular values for the svd method.
             Defaults to 8.
-        svd_scale: Noise scale for SVD residual perturbation. Defaults to 1.0.
+        svd_scale: Noise scale for SVD residual perturbation. Defaults to 0.5.
     """
     print(f"=== Upcycling Mistral 7B → Mixtral 8x7B with method={method} ===\n")
 
@@ -269,11 +269,11 @@ def main():
     parser.add_argument("--method", required=True,
                         choices=["direct", "gaussian", "svd"])
     parser.add_argument("--output", required=True, help="Output directory")
-    parser.add_argument("--sigma", type=float, default=1.0,
+    parser.add_argument("--sigma", type=float, default=0.1,
                         help="Noise scale for gaussian method")
     parser.add_argument("--k", type=int, default=8,
                         help="Number of structural singular values for svd method")
-    parser.add_argument("--svd-scale", type=float, default=1.0,
+    parser.add_argument("--svd-scale", type=float, default=0.5,
                         help="Noise scale for SVD residual perturbation")
     args = parser.parse_args()
     upcycle(args.method, args.output, sigma=args.sigma, k=args.k,

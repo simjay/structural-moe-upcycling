@@ -9,6 +9,7 @@ dependencies = []
 train = [
     "torch",
     "transformers>=5.0",
+    "accelerate",
     "trl",
     "datasets",
     "wandb",

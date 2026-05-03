@@ -112,32 +112,27 @@ prime pods terminate <pod-id>
 
 ## Running the experiments
 
-### Qwen1.5 (small-scale)
+Each experiment has a single `run.sh` that handles the full pipeline (upcycle → train → eval → cleanup) for all three init methods sequentially. Results are logged to wandb.
 
 ```bash
-# Upcycle
-python3 -m src.qwen15.upcycle --method direct    --output /tmp/qwen-moe-direct
-python3 -m src.qwen15.upcycle --method gaussian  --output /tmp/qwen-moe-gaussian
-python3 -m src.qwen15.upcycle --method svd       --output /tmp/qwen-moe-svd
+# Qwen1.5 (1x A100-80GB)
+bash src/qwen15/run.sh
 
-# Train
-python3 -m src.qwen15.train --model /tmp/qwen-moe-direct    --run-name qwen-direct
-python3 -m src.qwen15.train --model /tmp/qwen-moe-gaussian  --run-name qwen-gaussian
-python3 -m src.qwen15.train --model /tmp/qwen-moe-svd       --run-name qwen-svd
+# Mixtral (4x H100-80GB)
+bash src/mixtral/run.sh
 ```
 
-### Mixtral (large-scale)
+To run individual steps manually:
 
 ```bash
-# Upcycle
-python3 -m src.mixtral.upcycle --method direct    --output /tmp/mixtral-direct
-python3 -m src.mixtral.upcycle --method gaussian  --output /tmp/mixtral-gaussian
-python3 -m src.mixtral.upcycle --method svd       --output /tmp/mixtral-svd
+# Upcycle one method
+python3 -m src.qwen15.upcycle --method svd --output /tmp/qwen-moe-svd
 
-# Train (on 4x H100-80GB)
-python3 -m src.mixtral.train --model /tmp/mixtral-direct    --run-name mixtral-direct
-python3 -m src.mixtral.train --model /tmp/mixtral-gaussian  --run-name mixtral-gaussian
-python3 -m src.mixtral.train --model /tmp/mixtral-svd       --run-name mixtral-svd
+# Train one method
+python3 -m src.qwen15.train --model /tmp/qwen-moe-svd --run-name qwen-svd
+
+# Evaluate one checkpoint
+python3 -m src.eval.gsm8k --model /tmp/moe-checkpoints/qwen-svd/final
 ```
 
 ### Hyperparameters (held constant across all runs)
@@ -145,24 +140,30 @@ python3 -m src.mixtral.train --model /tmp/mixtral-svd       --run-name mixtral-s
 | Parameter | Value |
 | --- | --- |
 | Trained components | expert FFNs + router only (attention frozen) |
-| Gaussian sigma | 1.0 |
+| Gaussian sigma | 0.1 |
 | SVD k (structural singular values) | 8 |
-| SVD residual noise scale | 1.0 |
+| SVD residual noise scale | 0.5 |
 | Max steps | 300 |
-| Batch size | 2 (x 4 gradient accumulation = effective 8) |
-| Learning rate | 2e-4, cosine schedule, 100 warmup steps |
+| Batch size | 1 (x 4 gradient accumulation = effective 4) |
+| Learning rate | 1e-5, cosine schedule, 30 warmup steps |
 | Optimizer | adamw_8bit |
 | Sequence length | 2048 |
 | Precision | bf16 |
 | Gradient checkpointing | enabled |
 | Dataset | OpenMathReasoning (cot split, shuffled) |
+| Eval dataset | GSM8K train split (7473 problems) |
 
-### Compare
+### Evaluation metrics
 
-Open wandb and compare the six runs on:
-- Training loss convergence speed
-- Final training loss at step 300
-- Cross-scale consistency (does the same init method win at both scales?)
+All metrics are logged to wandb during training. Compare the six runs on:
+
+| Metric | Frequency | What it shows |
+| --- | --- | --- |
+| `eval/loss` | every 50 steps | Generalization to unseen math — primary convergence metric |
+| `router/mean_entropy` | every 10 steps | Expert diversification; higher = more uniform expert usage |
+| `train/loss` | every 10 steps | Training set fit (expect similar across methods) |
+
+GSM8K accuracy (greedy generation) is evaluated on the final checkpoint at the end of each run.
 
 ### Project structure
 
@@ -170,15 +171,20 @@ Open wandb and compare the six runs on:
 structural-moe-upcycling/
 ├── src/
 │   ├── __init__.py
+│   ├── eval/
+│   │   ├── __init__.py
+│   │   └── gsm8k.py      # GSM8K accuracy evaluation
 │   ├── qwen15/
 │   │   ├── __init__.py
-│   │   ├── upcycle.py   # Qwen1.5: 3 init methods + shared/routing expert setup
-│   │   ├── train.py     # Qwen1.5: train experts + router only (attention frozen)
+│   │   ├── upcycle.py     # 3 init methods + shared/routing expert setup
+│   │   ├── train.py       # Train experts + router, log eval loss + entropy
+│   │   ├── run.sh         # Full pipeline: upcycle → train → eval → cleanup
 │   │   └── README.md
 │   └── mixtral/
 │       ├── __init__.py
-│       ├── upcycle.py   # Mixtral: 3 init methods, full-size experts
-│       ├── train.py     # Mixtral: train experts + router only (attention frozen)
+│       ├── upcycle.py     # 3 init methods, full-size experts
+│       ├── train.py       # Train experts + router, log eval loss + entropy
+│       ├── run.sh         # Full pipeline: upcycle → train → eval → cleanup
 │       └── README.md
 ├── tests/
 │   ├── test_inference.py
