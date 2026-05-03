@@ -125,7 +125,7 @@ def main():
         lr_scheduler_type="cosine",
         warmup_steps=30,
         logging_steps=10,
-        save_steps=50,
+        save_strategy="no",
         eval_strategy="steps",
         eval_steps=50,
         optim="adamw_8bit",
