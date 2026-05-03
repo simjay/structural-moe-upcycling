@@ -104,6 +104,7 @@ def main():
     parser.add_argument("--output", default="/tmp/moe-checkpoints")
     parser.add_argument("--no-wandb", action="store_true")
     parser.add_argument("--dataset-seed", type=int, default=1)
+    parser.add_argument("--four-bit", type=bool, default=True)
     args = parser.parse_args()
 
     print(f"=== Training {args.run_name} ===\n")
@@ -112,7 +113,7 @@ def main():
     model_base, tokenizer = FastLanguageModel.from_pretrained(
       model_name = args.model,
       max_seq_length = args.seq_len,
-      load_in_4bit = True,
+      load_in_4bit = args.four_bit,
     )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token

@@ -166,8 +166,9 @@ def _svd_init_matrix(W, expert_dim, n_experts, k):
     result = torch.zeros(n_experts, expert_dim, W.shape[1], dtype=W.dtype)
 
     for e in range(n_experts):
-        noise = torch.randn_like(S_res) * S_res * 0.1
-        S_e = S_res + noise
+        # noise = torch.randn_like(S_res) * S_res * 0.1
+        # S_e = S_res + noise
+        S_e = S_res * 0
 
         W_struct = U_struct[:expert_dim, :] @ torch.diag(S_struct) @ Vt_struct
         n_res = min(expert_dim, U_res.shape[1])
@@ -206,8 +207,9 @@ def _svd_init_down_matrix(W, expert_dim, n_experts, k):
     result = torch.zeros(n_experts, W.shape[0], expert_dim, dtype=W.dtype)
 
     for e in range(n_experts):
-        noise = torch.randn_like(S_res) * S_res * 0.1
-        S_e = S_res + noise
+        # noise = torch.randn_like(S_res) * S_res * 0.1
+        # S_e = S_res + noise
+        S_e = S_res * 0
 
         W_struct = U_struct @ torch.diag(S_struct) @ Vt_struct[:, :expert_dim]
         n_res = min(expert_dim, Vt_res.shape[0])
