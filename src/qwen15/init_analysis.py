@@ -96,6 +96,7 @@ def main():
         model=model,
         processing_class=tokenizer,
         args=config,
+        train_dataset=eval_ds,
         eval_dataset=eval_ds,
     )
     metrics = trainer.evaluate()
