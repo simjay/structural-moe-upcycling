@@ -41,15 +41,28 @@ class ExpertDivergenceCallback(TrainerCallback):
 
     @torch.no_grad()
     def _compute_divergence(self):
+        """Compare experts within the same partition group.
+
+        Experts are initialized by cycling through n_chunks partitions of the
+        dense FFN. Experts sharing the same partition (e % n_chunks) start
+        identical under direct copy. This measures how much they've diverged.
+        """
+        n_chunks = 4  # ceil(5504 / 1408) for Qwen1.5-MoE
         similarities = []
         for name, param in self._model.named_parameters():
-            if "experts.gate_up_proj" in name and param.dim() == 3:
+            if "experts" in name and "gate_up_proj" in name and param.dim() == 3:
                 n_experts = param.shape[0]
                 flat = param.view(n_experts, -1).float()
                 normed = F.normalize(flat, dim=1)
-                sim_matrix = normed @ normed.T
-                mask = torch.triu(torch.ones(n_experts, n_experts, device=sim_matrix.device), diagonal=1).bool()
-                similarities.append(sim_matrix[mask].mean().item())
+                for chunk in range(n_chunks):
+                    group_idx = list(range(chunk, n_experts, n_chunks))
+                    if len(group_idx) < 2:
+                        continue
+                    group = normed[group_idx]
+                    sim_matrix = group @ group.T
+                    n = len(group_idx)
+                    mask = torch.triu(torch.ones(n, n, device=sim_matrix.device), diagonal=1).bool()
+                    similarities.append(sim_matrix[mask].mean().item())
         if similarities:
             return sum(similarities) / len(similarities)
         return None

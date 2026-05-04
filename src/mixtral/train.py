@@ -41,9 +41,14 @@ class ExpertDivergenceCallback(TrainerCallback):
 
     @torch.no_grad()
     def _compute_divergence(self):
+        """Compare all expert pairs within each layer.
+
+        For Mixtral, all 8 experts are full copies of the same dense FFN,
+        so all pairwise comparisons are valid.
+        """
         similarities = []
         for name, param in self._model.named_parameters():
-            if "experts.gate_up_proj" in name and param.dim() == 3:
+            if "experts" in name and "gate_up_proj" in name and param.dim() == 3:
                 n_experts = param.shape[0]
                 flat = param.view(n_experts, -1).float()
                 normed = F.normalize(flat, dim=1)

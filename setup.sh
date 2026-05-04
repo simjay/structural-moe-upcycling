@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-pip install --upgrade pip Pillow numpy
+python3 -m venv venv
+source venv/bin/activate
+pip install --upgrade pip
 pip install -e ".[train]"
