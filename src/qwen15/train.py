@@ -41,9 +41,133 @@ class ExpertUsageTracker:
         if total == 0: return torch.zeros(self.num_experts).cpu().numpy()
         return (self.counts / total).cpu().detach().numpy()
 
-class ExpertLoggingCallback(TrainerCallback):
-    def __init__(self, tracker):
+def format_sample(sample):
+    return {"text": f"Problem: {sample['problem']}\n\nSolution: {sample['generated_solution']}"}
+
+def get_expert_tensors(model, state):
+    expert_bank = {}
+    for name, module in model.named_modules():
+        if name.endswith("mlp.experts"):
+            m = re.search(r"layers\.(\d+)", name)
+            layer_id = m.group(1) if m else "0"
+            
+            for proj_name in ["gate_up_proj", "down_proj"]:
+                proj_attr = getattr(module, proj_name, None)
+                
+                if proj_attr is not None:
+                    if hasattr(proj_attr, "weight"):
+                        w = proj_attr.weight.data
+                    else:
+                        w = proj_attr.data
+                    
+                    # Ensure we are working with the expected 3D shape: [E, Out, In]
+                    # w[i] is expert i
+                    try:
+                        expert_bank[f"layer_{layer_id}_{proj_name}"] = [
+                            w[i].flatten().float().cpu() for i in range(w.shape[0])
+                        ]
+                    except Exception as e:
+                        continue        
+    return expert_bank
+
+# def compute_global_expert_diversity(expert_bank):
+#     all_off_diag = []
+#     for layer_proj, vectors in expert_bank.items():
+#         if len(vectors) < 2: continue
+#         try:
+#             W = torch.stack(vectors)  # [E, D]
+#             W = F.normalize(W, dim=1)
+#             sim = W @ W.T
+#             mask = ~torch.eye(sim.size(0), dtype=torch.bool, device=sim.device)
+#             all_off_diag.append(sim[mask])
+#         except Exception: continue
+
+#     if not all_off_diag: return None
+#     all_off_diag = torch.cat(all_off_diag)
+#     return {
+#         "mean_cosine_similarity": all_off_diag.mean().item(),
+#         "max_cosine_similarity": all_off_diag.max().item(),
+#         "min_cosine_similarity": all_off_diag.min().item(),
+#         "std_cosine_similarity": all_off_diag.std().item(),
+#     }
+def compute_global_expert_diversity(expert_bank):
+    all_off_diag = []
+    num_parts = 4  # The number of distinct matrices in one "copy"
+    
+    for layer_proj, vectors in expert_bank.items():
+        if len(vectors) < num_parts: continue
+        
+        try:
+            # W shape: [num_experts, D], e.g., [60, D]
+            W = torch.stack(vectors) 
+            num_experts = W.shape[0]
+            
+            # We want to compare experts that are at the same position in their groups
+            # i.e., indices: [0, 4, 8, ...], [1, 5, 9, ...], etc.
+            for part_idx in range(num_parts):
+                # Select experts 0, 4, 8... then 1, 5, 9...
+                indices = torch.arange(part_idx, num_experts, num_parts)
+                part_W = W[indices]  # Shape: [num_copies, D], e.g., [15, D]
+                
+                if part_W.shape[0] < 2: continue
+                
+                # Compare these parallel experts against each other
+                part_W = F.normalize(part_W, dim=1)
+                sim = part_W @ part_W.T # [15, 15]
+                
+                # Mask out diagonal
+                mask = ~torch.eye(sim.size(0), dtype=torch.bool, device=sim.device)
+                all_off_diag.append(sim[mask])
+                
+        except Exception:
+            continue
+
+    if not all_off_diag: return None
+    
+    all_off_diag = torch.cat(all_off_diag)
+    
+    return {
+        "mean_cosine_similarity": all_off_diag.mean().item(),
+        "max_cosine_similarity": all_off_diag.max().item(),
+        "min_cosine_similarity": all_off_diag.min().item(),
+        "std_cosine_similarity": all_off_diag.std().item(),
+    }
+
+
+# class ExpertLoggingCallback(TrainerCallback):
+#     def __init__(self, tracker):
+#         self.tracker = tracker
+
+#     def on_log(self, args, state, control, logs=None, **kwargs):
+#         if state.is_world_process_zero:
+#             probs = self.tracker.get_probabilities()
+#             data = [[i, p] for i, p in enumerate(probs)]
+#             table = wandb.Table(data=data, columns=["expert_id", "usage_fraction"])
+            
+#             wandb.log({
+#                 "expert_usage_dist": wandb.plot.bar(table, "expert_id", "usage_fraction", title="Expert Usage Distribution"),
+#                 "max_expert_load": probs.max(),
+#                 "min_expert_load": probs.min()
+#             }, step=state.global_step, commit=False)
+
+# class ExpertDiversityCallback(TrainerCallback):
+#     def __init__(self, model, every_n_steps=10):
+#         self.model = model
+#         self.every_n_steps = every_n_steps
+
+#     def on_step_end(self, args, state, control, **kwargs):
+#         if state.global_step % self.every_n_steps != 0: return
+#         expert_bank = get_expert_tensors(self.model, state)
+#         stats = compute_global_expert_diversity(expert_bank)
+#         if stats:
+#             wandb.log({f"expert_diversity/{k}": v for k, v in stats.items()}, 
+#                       step=state.global_step, commit=False)
+
+class ExpertCallback(TrainerCallback):
+    def __init__(self, tracker, model, every_n_steps=10):
         self.tracker = tracker
+        self.model = model
+        self.every_n_steps = every_n_steps
 
     def on_log(self, args, state, control, logs=None, **kwargs):
         if state.is_world_process_zero:
@@ -57,68 +181,7 @@ class ExpertLoggingCallback(TrainerCallback):
                 "min_expert_load": probs.min()
             }, step=state.global_step, commit=False)
 
-def format_sample(sample):
-    return {"text": f"Problem: {sample['problem']}\n\nSolution: {sample['generated_solution']}"}
-
-def get_expert_tensors(model, state):
-    expert_bank = {}
-    
-    for name, module in model.named_modules():
-        # Target the fused expert weights
-        if name.endswith("mlp.experts"):
-            m = re.search(r"layers\.(\d+)", name)
-            layer_id = m.group(1) if m else "0"
-            
-            for proj_name in ["gate_up_proj", "down_proj"]:
-                proj_attr = getattr(module, proj_name, None)
-                
-                if proj_attr is not None:
-                    # If it's an nn.Linear or similar, grab .weight.data
-                    # If it's a Parameter/Tensor, grab .data directly
-                    if hasattr(proj_attr, "weight"):
-                        w = proj_attr.weight.data
-                    else:
-                        w = proj_attr.data
-                    
-                    # Ensure we are working with the expected 3D shape: [E, Out, In]
-                    # w[i] is expert i
-                    try:
-                        expert_bank[f"layer_{layer_id}_{proj_name}"] = [
-                            w[i].flatten().float().cpu() for i in range(w.shape[0])
-                        ]
-                    except Exception as e:
-                        # Silently skip if dimensions don't allow indexing (e.g. not an expert tensor)
-                        continue
-                        
-    return expert_bank
-
-def compute_global_expert_diversity(expert_bank):
-    all_off_diag = []
-    for layer_proj, vectors in expert_bank.items():
-        if len(vectors) < 2: continue
-        try:
-            W = torch.stack(vectors)  # [E, D]
-            W = F.normalize(W, dim=1)
-            sim = W @ W.T
-            mask = ~torch.eye(sim.size(0), dtype=torch.bool, device=sim.device)
-            all_off_diag.append(sim[mask])
-        except Exception: continue
-
-    if not all_off_diag: return None
-    all_off_diag = torch.cat(all_off_diag)
-    return {
-        "mean_cosine_similarity": all_off_diag.mean().item(),
-        "max_cosine_similarity": all_off_diag.max().item(),
-        "min_cosine_similarity": all_off_diag.min().item(),
-        "std_cosine_similarity": all_off_diag.std().item(),
-    }
-
-class ExpertDiversityCallback(TrainerCallback):
-    def __init__(self, model, every_n_steps=10):
-        self.model = model
-        self.every_n_steps = every_n_steps
-
-    def on_step_end(self, args, state, control, **kwargs):
+        
         if state.global_step % self.every_n_steps != 0: return
         expert_bank = get_expert_tensors(self.model, state)
         stats = compute_global_expert_diversity(expert_bank)
@@ -140,8 +203,6 @@ def main():
     parser.add_argument("--dataset-seed", type=int, default=1)
     args = parser.parse_args()
 
-    # 1. Load Model (Using 4-bit is still possible to save memory, but it's "Full" on the 4-bit weights)
-    # If you have enough VRAM, set load_in_4bit=False for true full precision fine-tuning.
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name = args.model,
         max_seq_length = args.seq_len,
@@ -151,7 +212,6 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-# 2. Enable Gradients for ALL parameters (The "No LoRA" part)
     # model.requires_grad_(True)
     model.requires_grad_(False)
 
@@ -227,8 +287,9 @@ def main():
         train_dataset=ds,
         args=training_args,
         callbacks=[
-            ExpertLoggingCallback(tracker),
-            ExpertDiversityCallback(model, every_n_steps=10),
+            ExpertCallback(tracker, model, every_n_steps=10),
+            # ExpertLoggingCallback(tracker),
+            # ExpertDiversityCallback(model, every_n_steps=10),
         ]
     )
 
