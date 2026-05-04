@@ -12,15 +12,17 @@ Example:
 
 from unsloth import FastLanguageModel
 import argparse
-
 import pandas as pd
 import torch
+import torch.nn.functional as F
 from datasets import load_dataset
 from peft import LoraConfig, get_peft_model
 from trl import SFTTrainer, SFTConfig
 import gc
 from transformers import TrainerCallback
 import wandb
+import re
+import bitsandbytes as bnb
 
 DATASET = "nvidia/OpenMathReasoning"
 DATASET_SPLIT = "cot"
@@ -34,18 +36,9 @@ class ExpertUsageTracker:
     def hook_fn(self, module, input, output):
         if isinstance(output, torch.Tensor):
             logits = output
-            # Get the top-k expert indices
             _, indices = torch.topk(logits, self.top_k, dim=-1)
-            
-            # Flatten indices to a 1D tensor
             flat_indices = indices.flatten()
-            
-            # Use minlength to ensure the output has 60 bins
-            # AND slice/pad just in case bincount behaves oddly with empty inputs
             batch_counts = torch.bincount(flat_indices, minlength=self.num_experts)
-            
-            # If bincount returns more than 60 (shouldn't happen), we slice it
-            # to match self.counts (size 60)
             self.counts += batch_counts[:self.num_experts]
 
     def reset(self):
@@ -66,7 +59,6 @@ class ExpertLoggingCallback(TrainerCallback):
         if state.is_world_process_zero:
             probs = self.tracker.get_probabilities()
             
-            # Create a bar chart for WandB
             data = [[i, p] for i, p in enumerate(probs)]
             table = wandb.Table(data=data, columns=["expert_id", "usage_fraction"])
             
@@ -76,7 +68,6 @@ class ExpertLoggingCallback(TrainerCallback):
                 "min_expert_load": probs.min()
             }, step=state.global_step)
             
-            # Optional: Reset tracker after logging to see "instantaneous" usage
             # self.tracker.reset()
 
 def format_sample(sample):
@@ -90,6 +81,123 @@ def format_sample(sample):
     """
     return {"text": f"Problem: {sample['problem']}\n\nSolution: {sample['generated_solution']}"}
 
+def get_expert_tensors(model):
+    expert_bank = {}
+
+    for name, module in model.named_modules():
+        if not name.endswith("mlp.experts.base_layer.base_layer"):
+            continue
+
+        m = re.search(r"layers\.(\d+)", name)
+        if not m: continue
+        layer_id = int(m.group(1))
+        layer_key = f"layer_{layer_id}"
+        expert_bank[layer_key] = {"up_proj": [], "down_proj": [], "gate_proj": []}
+        
+        for p_name, param in module.named_parameters(recurse=False):
+            if "lora" in p_name.lower(): continue
+            
+            # Detach and move to CPU immediately for math
+            w = param.detach().float().cpu()
+            num_experts = w.shape[0] # This is 60
+
+            if "gate_up_proj" in p_name:
+                # Split the 2816 dimension into 1408 (gate) and 1408 (up)
+                gate_weights, up_weights = w.chunk(2, dim=1)
+                
+                for i in range(num_experts):
+                    # Store as flattened vectors for cosine similarity
+                    expert_bank[layer_key]["gate_proj"].append(gate_weights[i].reshape(-1))
+                    expert_bank[layer_key]["up_proj"].append(up_weights[i].reshape(-1))
+            
+            elif "down_proj" in p_name:
+                for i in range(num_experts):
+                    expert_bank[layer_key]["down_proj"].append(w[i].reshape(-1))
+
+    # Debug check to see if the bank actually filled up
+    first_layer = list(expert_bank.keys())[0] if expert_bank else "NONE"
+    if first_layer != "NONE":
+        print(f"DEBUG: Bank check for {first_layer}: Gate count = {len(expert_bank[first_layer]['gate_proj'])}")
+    else:
+        print("DEBUG: Expert bank is EMPTY. The 'if name.endswith' check might be failing.")
+
+    return expert_bank
+    
+def cosine_stats(matrix):
+    """
+    matrix: [E, D]
+    """
+    if matrix.shape[0] < 2:
+        return None
+
+    W = F.normalize(matrix, dim=1)
+    sim = W @ W.T
+
+    mask = ~torch.eye(sim.size(0), dtype=torch.bool)
+    off = sim[mask]
+
+    return {
+        "mean": off.mean().item(),
+        "max": off.max().item(),
+        "min": off.min().item(),
+        "std": off.std().item(),
+    }
+
+def compute_global_expert_diversity(expert_bank):
+    all_off_diag = []
+
+    for layer, comps in expert_bank.items():
+        for comp, vectors in comps.items():
+            if len(vectors) < 2:
+                continue
+
+            try:
+                W = torch.stack(vectors)  # [E, D]
+            except RuntimeError:
+                continue
+
+            W = F.normalize(W, dim=1)
+            sim = W @ W.T
+            mask = ~torch.eye(sim.size(0), dtype=torch.bool)
+            off_diag = sim[mask]
+            all_off_diag.append(off_diag)
+
+    if len(all_off_diag) == 0:
+        return None
+    all_off_diag = torch.cat(all_off_diag)
+
+    return {
+        "mean_cosine_similarity": all_off_diag.mean().item(),
+        "max_cosine_similarity": all_off_diag.max().item(),
+        "min_cosine_similarity": all_off_diag.min().item(),
+        "std_cosine_similarity": all_off_diag.std().item(),
+    }
+
+class ExpertDiversityCallback(TrainerCallback):
+    def __init__(self, model, every_n_steps=50):
+        self.model = model
+        self.every_n_steps = every_n_steps
+
+    def on_step_end(self, args, state, control, **kwargs):
+        if state.global_step % self.every_n_steps != 0:
+            return
+
+        expert_bank = get_expert_tensors(self.model)
+        for k, v in expert_bank.items():
+            print(k, {kk: len(vv) for kk, vv in v.items()})
+        print("expert_bank size:", len(expert_bank))
+        stats = compute_global_expert_diversity(expert_bank)
+
+        print("stats:", stats)
+        if stats is None:
+            return
+
+        wandb.log({
+            "expert_diversity/mean_cosine_similarity": stats["mean_cosine_similarity"],
+            "expert_diversity/max_cosine_similarity": stats["max_cosine_similarity"],
+            "expert_diversity/min_cosine_similarity": stats["min_cosine_similarity"],
+            "expert_diversity/std_cosine_similarity": stats["std_cosine_similarity"],
+        }, step=state.global_step)
 
 def main():
     parser = argparse.ArgumentParser(description="Fine-tune upcycled MoE model")
@@ -137,6 +245,11 @@ def main():
       lora_dropout = 0,
       use_gradient_checkpointing = "unsloth", 
     )
+    # for name, module in model.named_modules():
+    #   print(name)
+    # for name, module in model.named_modules():
+    #     if "mlp" in name.lower():
+    #         print(name)
 
     num_experts = model.config.num_experts
     tracker = ExpertUsageTracker(num_experts, top_k=model.config.num_experts_per_tok)
@@ -144,7 +257,6 @@ def main():
     # Attach to the gate specifically
     hooks_count = 0
     for name, module in model.named_modules():
-        # Qwen2Moe uses 'gate' for the router
         if name.endswith(".gate"):
             module.register_forward_hook(tracker.hook_fn)
             hooks_count += 1
@@ -157,12 +269,12 @@ def main():
             module.register_forward_hook(tracker.hook_fn)
     
     # Manually enable training for the router/gate modules
-    # for name, param in model.named_parameters():
-    #     if any(x in name for x in ["mlp.gate", "shared_expert_gate"]):
-    #         param.data = param.data.to(torch.bfloat16) 
-    #         param.requires_grad = True
-    #         # print(f"Full Fine-Tuning enabled for: {name} (Casted to BF16)")
-    # model.print_trainable_parameters()
+    for name, param in model.named_parameters():
+        if any(x in name for x in ["mlp.gate", "shared_expert_gate"]):
+            param.data = param.data.to(torch.bfloat16) 
+            param.requires_grad = True
+            # print(f"Full Fine-Tuning enabled for: {name} (Casted to BF16)")
+    model.print_trainable_parameters()
 
     print("Loading dataset...")
     ds = load_dataset(DATASET, split=DATASET_SPLIT, streaming=True)
@@ -195,7 +307,10 @@ def main():
         processing_class=tokenizer,
         train_dataset=ds,
         args=training_args,
-        callbacks=[ExpertLoggingCallback(tracker)]
+        callbacks=[
+          ExpertLoggingCallback(tracker),
+          ExpertDiversityCallback(model, every_n_steps=10),
+        ]
     )
 
 
