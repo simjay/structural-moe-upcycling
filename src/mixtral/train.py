@@ -123,6 +123,7 @@ def main():
         run_name=args.run_name,
         max_steps=args.max_steps,
         per_device_train_batch_size=args.batch_size,
+        per_device_eval_batch_size=1,
         gradient_accumulation_steps=4,
         learning_rate=args.lr,
         lr_scheduler_type="cosine",
