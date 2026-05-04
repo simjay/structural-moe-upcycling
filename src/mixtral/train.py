@@ -133,7 +133,7 @@ def main():
         eval_strategy="steps",
         eval_steps=50,
         seed=args.seed,
-        optim="adamw_8bit",
+        optim="paged_adamw_8bit",
         bf16=torch.cuda.is_bf16_supported(),
         fp16=not torch.cuda.is_bf16_supported(),
         gradient_checkpointing=True,
