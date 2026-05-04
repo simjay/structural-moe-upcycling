@@ -154,22 +154,11 @@ def main():
         callbacks=[divergence_callback],
     )
 
-    print("Computing step-0 metrics...")
-    step0_metrics = trainer.evaluate()
     step0_sim = divergence_callback._compute_divergence()
-
     import wandb
     if wandb.run is not None:
-        wandb.log({
-            "eval/loss": step0_metrics["eval_loss"],
-            "expert/mean_cosine_similarity": step0_sim,
-        }, step=0)
-
-    print(f"  step-0 eval/loss = {step0_metrics['eval_loss']:.4f}")
-    print(f"  step-0 cosine_similarity = {step0_sim:.6f}")
-
-    del step0_metrics
-    torch.cuda.empty_cache()
+        wandb.log({"expert/mean_cosine_similarity": step0_sim}, step=0)
+    print(f"step-0 cosine_similarity = {step0_sim:.6f}")
 
     print(f"\nTraining for {args.max_steps} steps...")
     result = trainer.train()
