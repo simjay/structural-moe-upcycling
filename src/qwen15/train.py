@@ -167,6 +167,9 @@ def main():
     print(f"  step-0 eval/loss = {step0_metrics['eval_loss']:.4f}")
     print(f"  step-0 cosine_similarity = {step0_sim:.6f}")
 
+    del step0_metrics
+    torch.cuda.empty_cache()
+
     print(f"\nTraining for {args.max_steps} steps...")
     result = trainer.train()
 
