@@ -115,7 +115,7 @@ prime pods terminate <pod-id>
 Each experiment has a run script in `scripts/` that handles the full pipeline. Results are logged to wandb and saved as JSON locally.
 
 ```bash
-# Qwen1.5 — init analysis + training dynamics (1x A100-80GB)
+# Qwen1.5 (1x A100-80GB)
 bash scripts/run_qwen15.sh
 
 # Mixtral — full sweep (4x H100-80GB)
@@ -126,16 +126,12 @@ To run individual steps manually:
 
 ```bash
 # Upcycle one method
-python3 -m src.qwen15.upcycle --method svd --output /tmp/qwen-moe-svd
+python3 -m src.qwen15.upcycle --method svd --k 128 --svd-scale 0.5 --output /tmp/qwen-moe-svd
 
-# Analyze initialization quality (no training)
-python3 -m src.qwen15.init_analysis --method svd --k 128 --svd-scale 0.5 \
-    --output results/qwen15/step0/svd-k128-s0.5.json
-
-# Train one method
+# Train (includes step-0 metrics + 300 steps + GSM8K eval)
 python3 -m src.qwen15.train --model /tmp/qwen-moe-svd --run-name qwen-svd
 
-# Evaluate one checkpoint
+# Evaluate a checkpoint standalone
 python3 -m src.eval.gsm8k --model /tmp/moe-checkpoints/qwen-svd/final
 ```
 
@@ -180,8 +176,7 @@ structural-moe-upcycling/
 │   ├── qwen15/
 │   │   ├── __init__.py
 │   │   ├── upcycle.py       # 3 init methods + shared/routing expert setup
-│   │   ├── train.py         # Train experts + router, log metrics to wandb
-│   │   ├── init_analysis.py # Measure init quality + expert diversity (no training)
+│   │   ├── train.py         # Step-0 metrics + training + GSM8K eval
 │   │   └── README.md
 │   └── mixtral/
 │       ├── __init__.py
@@ -189,7 +184,7 @@ structural-moe-upcycling/
 │       ├── train.py         # Train experts + router, log metrics to wandb
 │       └── README.md
 ├── scripts/
-│   ├── run_qwen15.sh        # Qwen1.5: init analysis sweep + training dynamics
+│   ├── run_qwen15.sh        # Qwen1.5: upcycle + train + eval per config
 │   └── run_mixtral.sh       # Mixtral: full pipeline (all configs)
 ├── setup.sh
 ├── tests/

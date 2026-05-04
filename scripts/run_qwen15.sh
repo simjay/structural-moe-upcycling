@@ -1,23 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Qwen1.5 experiment pipeline:
-#   Part A: Init analysis — measure quality + diversity before training
-#   Part B: Training dynamics — 300 steps, logs to wandb
+# Qwen1.5 experiment pipeline.
+# For each config: upcycle → train (step-0 metrics + 300 steps + GSM8K) → cleanup.
+# Everything is logged to wandb in a single run per config.
 #
-# 5 configs (all run through both parts):
+# Configs:
 #   1. direct                          (baseline)
 #   2. gaussian  sigma=0.1             (light random noise)
 #   3. gaussian  sigma=0.5             (heavy random noise)
 #   4. svd       k=128  svd_scale=0.1  (light structured perturbation)
 #   5. svd       k=128  svd_scale=0.5  (heavy structured perturbation)
 
-STEP0_DIR="results/qwen15/step0"
 CKPT_DIR="/tmp/moe-checkpoints"
 RESULTS_DIR="results/qwen15"
 WORK_DIR="/tmp/qwen-moe"
 
-mkdir -p "${STEP0_DIR}" "${RESULTS_DIR}"
+mkdir -p "${RESULTS_DIR}"
 
 CONFIGS=(
     "direct|qwen-direct||"
@@ -27,35 +26,8 @@ CONFIGS=(
     "svd|qwen-svd-k128-s0.5|--k 128 --svd-scale 0.5|"
 )
 
-# ============================================================
-#  Part A: Init analysis (quality vs diversity, no training)
-# ============================================================
-
 echo "============================================"
-echo " Part A: Init Analysis (5 configs)"
-echo "============================================"
-
-for entry in "${CONFIGS[@]}"; do
-    IFS='|' read -r method run_name upcycle_args _ <<< "${entry}"
-    echo ""
-    echo "[init] ${run_name}"
-    python3 -m src.qwen15.init_analysis \
-        --method "${method}" ${upcycle_args} \
-        --output "${STEP0_DIR}/${run_name}.json"
-done
-
-echo ""
-echo "============================================"
-echo " Part A complete. Results in ${STEP0_DIR}/"
-echo "============================================"
-
-# ============================================================
-#  Part B: Training dynamics (300 steps each)
-# ============================================================
-
-echo ""
-echo "============================================"
-echo " Part B: Training Dynamics (5 configs, 300 steps each)"
+echo " Qwen1.5 Experiment (5 configs)"
 echo "============================================"
 
 for entry in "${CONFIGS[@]}"; do
@@ -63,7 +35,7 @@ for entry in "${CONFIGS[@]}"; do
 
     echo ""
     echo "--------------------------------------------"
-    echo " Training: ${run_name}"
+    echo " ${run_name}"
     echo "--------------------------------------------"
 
     model_dir="${WORK_DIR}-${run_name}"
@@ -72,7 +44,7 @@ for entry in "${CONFIGS[@]}"; do
     echo "[1/3] Upcycling (${method})..."
     python3 -m src.qwen15.upcycle --method "${method}" ${upcycle_args} --output "${model_dir}"
 
-    echo "[2/3] Training + GSM8K eval..."
+    echo "[2/3] Training (step-0 + 300 steps + GSM8K)..."
     python3 -m src.qwen15.train \
         --model "${model_dir}" \
         --run-name "${run_name}" \
@@ -89,6 +61,5 @@ done
 echo ""
 echo "============================================"
 echo " All experiments complete."
-echo " Init analysis: ${STEP0_DIR}/"
-echo " Training results: ${RESULTS_DIR}/"
+echo " Results: ${RESULTS_DIR}/"
 echo "============================================"
