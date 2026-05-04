@@ -110,6 +110,7 @@ def main():
     print(f"=== Training {args.run_name} ===\n")
 
     print("Loading model...")
+    # model, tokenizer = FastLanguageModel.from_pretrained(
     model_base, tokenizer = FastLanguageModel.from_pretrained(
       model_name = args.model,
       max_seq_length = args.seq_len,
@@ -117,6 +118,13 @@ def main():
     )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    # print(type(model))
+    # print(model.config.torch_dtype)
+    # print(model.hf_device_map if hasattr(model, "hf_device_map") else None)
+    # for name, module in model.named_modules():
+    #     if "Linear4bit" in str(type(module)) or "bnb" in str(type(module)).lower():
+    #         print("QUANT LAYER FOUND:", name, type(module))
+    #         break
 
     model = FastLanguageModel.get_peft_model(
       model_base,
@@ -149,12 +157,12 @@ def main():
             module.register_forward_hook(tracker.hook_fn)
     
     # Manually enable training for the router/gate modules
-    for name, param in model.named_parameters():
-        if any(x in name for x in ["mlp.gate", "shared_expert_gate"]):
-            param.data = param.data.to(torch.bfloat16) 
-            param.requires_grad = True
-            # print(f"Full Fine-Tuning enabled for: {name} (Casted to BF16)")
-    model.print_trainable_parameters()
+    # for name, param in model.named_parameters():
+    #     if any(x in name for x in ["mlp.gate", "shared_expert_gate"]):
+    #         param.data = param.data.to(torch.bfloat16) 
+    #         param.requires_grad = True
+    #         # print(f"Full Fine-Tuning enabled for: {name} (Casted to BF16)")
+    # model.print_trainable_parameters()
 
     print("Loading dataset...")
     ds = load_dataset(DATASET, split=DATASET_SPLIT, streaming=True)

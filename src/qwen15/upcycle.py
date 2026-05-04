@@ -14,6 +14,7 @@ import argparse
 import math
 
 import torch
+import os
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 import torch.nn as nn
 
@@ -222,10 +223,9 @@ def _svd_init_matrix(W, expert_dim, n_experts, k, sigma_scale):
 
     for e in range(n_experts):
         if len(S_res) > 0:
-            # noise proportional to singular values (NOT index)
-            # noise = torch.randn_like(S_res) * (sigma_scale * S_res)
-            # S_e = S_res + noise
-            S_e = torch.zeros_like(S_res)
+            noise = torch.randn_like(S_res) * (sigma_scale * S_res)
+            S_e = S_res + noise
+            # S_e = torch.zeros_like(S_res)
 
             W_res_full = U_res @ torch.diag(S_e) @ Vt_res
         else:
@@ -274,9 +274,9 @@ def _svd_init_down_matrix(W, expert_dim, n_experts, k, sigma_scale):
 
     for e in range(n_experts):
         if len(S_res) > 0:
-            # noise = torch.randn_like(S_res) * (sigma_scale * S_res)
-            # S_e = S_res + noise
-            S_e = torch.zeros_like(S_res)
+            noise = torch.randn_like(S_res) * (sigma_scale * S_res)
+            S_e = S_res + noise
+            # S_e = torch.zeros_like(S_res)
 
             W_res_full = U_res @ torch.diag(S_e) @ Vt_res
         else:
@@ -355,18 +355,45 @@ def upcycle(method, output_dir, sigma=0.01, k=256, sigma_scale=0.1):
         DENSE_MODEL, dtype=torch.bfloat16, device_map="cpu")
     tokenizer = AutoTokenizer.from_pretrained(DENSE_MODEL)
 
-    print("Creating empty MoE model (bf16)...")
-    prev = torch.get_default_dtype()
-    torch.set_default_dtype(torch.bfloat16)
-    moe = AutoModelForCausalLM.from_config(moe_cfg)
-    torch.set_default_dtype(prev)
+    # print("Creating empty MoE model (bf16)...")
+    # prev = torch.get_default_dtype()
+    # torch.set_default_dtype(torch.bfloat16)
+    # moe = AutoModelForCausalLM.from_config(moe_cfg)
+    # torch.set_default_dtype(prev)
 
-    cfg = dict(
-        n_layers=dense_cfg.num_hidden_layers,
-        n_experts=moe_cfg.num_experts,
-        expert_dim=moe_cfg.moe_intermediate_size,
-        dense_dim=dense_cfg.intermediate_size,
-    )
+    # cfg = dict(
+    #     n_layers=dense_cfg.num_hidden_layers,
+    #     n_experts=moe_cfg.num_experts,
+    #     expert_dim=moe_cfg.moe_intermediate_size,
+    #     dense_dim=dense_cfg.intermediate_size,
+    # )
+
+    CACHE_PATH = "/tmp/moe_cache.pt"  # or a Drive path
+
+    if os.path.exists(CACHE_PATH):
+        print("Loading cached MoE + cfg...")
+        checkpoint = torch.load(CACHE_PATH, map_location="cpu", weights_only=False)
+
+        moe = checkpoint["moe"]
+        cfg = checkpoint["cfg"]
+
+    else:
+        print("Building MoE from scratch...")
+
+        prev = torch.get_default_dtype()
+        torch.set_default_dtype(torch.bfloat16)
+        moe = AutoModelForCausalLM.from_config(moe_cfg)
+        torch.set_default_dtype(prev)
+
+        cfg = dict(
+            n_layers=dense_cfg.num_hidden_layers,
+            n_experts=moe_cfg.num_experts,
+            expert_dim=moe_cfg.moe_intermediate_size,
+            dense_dim=dense_cfg.intermediate_size,
+        )
+
+        print("Saving cache...")
+        torch.save({"moe": moe, "cfg": cfg}, CACHE_PATH)
 
     print("Copying shared weights (attention, embeddings, norms, shared expert)...")
     with torch.no_grad():
