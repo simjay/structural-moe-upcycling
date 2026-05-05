@@ -272,6 +272,7 @@ def main():
         lr_scheduler_type="cosine",
         warmup_steps=args.warmup_steps,
         logging_steps=1,
+        save_strategy="no",
         save_steps=args.max_steps,
         optim = "adamw_8bit", # Highly recommended for full MoE fine-tuning
         bf16 = torch.cuda.is_bf16_supported(),
