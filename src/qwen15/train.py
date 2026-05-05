@@ -40,42 +40,47 @@ class ExpertDivergenceCallback(TrainerCallback):
         self._model = model
 
     @torch.no_grad()
-    def _compute_divergence(self):
-        """Compare experts within the same partition group.
+    def _compute_metrics(self):
+        """Compute cosine similarity and L2 divergence within partition groups.
 
         Experts are initialized by cycling through n_chunks partitions of the
         dense FFN. Experts sharing the same partition (e % n_chunks) start
-        identical under direct copy. This measures how much they've diverged.
+        identical under direct copy.
         """
         n_chunks = 4  # ceil(5504 / 1408) for Qwen1.5-MoE
-        similarities = []
+        cosine_sims = []
+        l2_dists = []
         for name, param in self._model.named_parameters():
             if "experts" in name and "gate_up_proj" in name and param.dim() == 3:
                 n_experts = param.shape[0]
                 flat = param.view(n_experts, -1).float()
-                normed = F.normalize(flat, dim=1)
+                norms = flat.norm(dim=1, keepdim=True)
+                normed = flat / norms.clamp(min=1e-8)
+                mean_norm = norms.mean().item()
                 for chunk in range(n_chunks):
                     group_idx = list(range(chunk, n_experts, n_chunks))
                     if len(group_idx) < 2:
                         continue
-                    group = normed[group_idx]
-                    sim_matrix = group @ group.T
+                    group = flat[group_idx]
+                    group_normed = normed[group_idx]
                     n = len(group_idx)
-                    mask = torch.triu(torch.ones(n, n, device=sim_matrix.device), diagonal=1).bool()
-                    similarities.append(sim_matrix[mask].mean().item())
-        if similarities:
-            return sum(similarities) / len(similarities)
-        return None
+                    mask = torch.triu(torch.ones(n, n, device=flat.device), diagonal=1).bool()
+                    sim_matrix = group_normed @ group_normed.T
+                    cosine_sims.append(sim_matrix[mask].mean().item())
+                    dists = torch.cdist(group.unsqueeze(0), group.unsqueeze(0)).squeeze(0)
+                    l2_dists.append((dists[mask].mean().item() / mean_norm))
+        cos = sum(cosine_sims) / len(cosine_sims) if cosine_sims else None
+        l2 = sum(l2_dists) / len(l2_dists) if l2_dists else None
+        return cos, l2
 
     def on_log(self, args, state, control, logs=None, **kwargs):
         import wandb
-        sim = self._compute_divergence()
-        if sim is not None and wandb.run is not None:
-            wandb.log(
-                {"expert/mean_cosine_similarity": sim},
-                step=state.global_step,
-                commit=False,
-            )
+        cos, l2 = self._compute_metrics()
+        if cos is not None and wandb.run is not None:
+            wandb.log({
+                "expert/cosine_similarity": cos,
+                "expert/l2_divergence": l2,
+            }, step=state.global_step, commit=False)
 
 
 def format_sample(sample):
@@ -167,11 +172,14 @@ def main():
         callbacks=[divergence_callback],
     )
 
-    step0_sim = divergence_callback._compute_divergence()
+    step0_cos, step0_l2 = divergence_callback._compute_metrics()
     import wandb
     if wandb.run is not None:
-        wandb.log({"expert/mean_cosine_similarity": step0_sim}, step=0)
-    print(f"step-0 cosine_similarity = {step0_sim:.6f}")
+        wandb.log({
+            "expert/cosine_similarity": step0_cos,
+            "expert/l2_divergence": step0_l2,
+        }, step=0)
+    print(f"step-0 cosine_similarity = {step0_cos:.6f}, l2_divergence = {step0_l2:.6f}")
 
     print(f"\nTraining for {args.max_steps} steps...")
     result = trainer.train()

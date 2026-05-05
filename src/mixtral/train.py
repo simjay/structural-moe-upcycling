@@ -40,34 +40,39 @@ class ExpertDivergenceCallback(TrainerCallback):
         self._model = model
 
     @torch.no_grad()
-    def _compute_divergence(self):
-        """Compare all expert pairs within each layer.
+    def _compute_metrics(self):
+        """Compute cosine similarity and L2 divergence between all expert pairs.
 
         For Mixtral, all 8 experts are full copies of the same dense FFN,
         so all pairwise comparisons are valid.
         """
-        similarities = []
+        cosine_sims = []
+        l2_dists = []
         for name, param in self._model.named_parameters():
             if "experts" in name and "gate_up_proj" in name and param.dim() == 3:
                 n_experts = param.shape[0]
                 flat = param.view(n_experts, -1).float()
-                normed = F.normalize(flat, dim=1)
+                norms = flat.norm(dim=1, keepdim=True)
+                normed = flat / norms.clamp(min=1e-8)
+                mean_norm = norms.mean().item()
+                n = n_experts
+                mask = torch.triu(torch.ones(n, n, device=flat.device), diagonal=1).bool()
                 sim_matrix = normed @ normed.T
-                mask = torch.triu(torch.ones(n_experts, n_experts, device=sim_matrix.device), diagonal=1).bool()
-                similarities.append(sim_matrix[mask].mean().item())
-        if similarities:
-            return sum(similarities) / len(similarities)
-        return None
+                cosine_sims.append(sim_matrix[mask].mean().item())
+                dists = torch.cdist(flat.unsqueeze(0), flat.unsqueeze(0)).squeeze(0)
+                l2_dists.append((dists[mask].mean().item() / mean_norm))
+        cos = sum(cosine_sims) / len(cosine_sims) if cosine_sims else None
+        l2 = sum(l2_dists) / len(l2_dists) if l2_dists else None
+        return cos, l2
 
     def on_log(self, args, state, control, logs=None, **kwargs):
         import wandb
-        sim = self._compute_divergence()
-        if sim is not None and wandb.run is not None:
-            wandb.log(
-                {"expert/mean_cosine_similarity": sim},
-                step=state.global_step,
-                commit=False,
-            )
+        cos, l2 = self._compute_metrics()
+        if cos is not None and wandb.run is not None:
+            wandb.log({
+                "expert/cosine_similarity": cos,
+                "expert/l2_divergence": l2,
+            }, step=state.global_step, commit=False)
 
 
 def format_sample(sample):
@@ -157,11 +162,14 @@ def main():
         callbacks=[divergence_callback],
     )
 
-    step0_sim = divergence_callback._compute_divergence()
+    step0_cos, step0_l2 = divergence_callback._compute_metrics()
     import wandb
     if wandb.run is not None:
-        wandb.log({"expert/mean_cosine_similarity": step0_sim}, step=0)
-    print(f"step-0 cosine_similarity = {step0_sim:.6f}")
+        wandb.log({
+            "expert/cosine_similarity": step0_cos,
+            "expert/l2_divergence": step0_l2,
+        }, step=0)
+    print(f"step-0 cosine_similarity = {step0_cos:.6f}, l2_divergence = {step0_l2:.6f}")
 
     print(f"\nTraining for {args.max_steps} steps...")
     result = trainer.train()
