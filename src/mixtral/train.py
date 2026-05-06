@@ -72,7 +72,7 @@ class ExpertDivergenceCallback(TrainerCallback):
             wandb.log({
                 "expert/cosine_similarity": cos,
                 "expert/l2_divergence": l2,
-            }, step=state.global_step, commit=False)
+            }, commit=False)
 
 
 def format_sample(sample):
