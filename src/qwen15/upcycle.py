@@ -136,124 +136,87 @@ def init_gaussian(dense, moe, cfg, sigma=0.1):
         experts.down_proj.add_(torch.randn_like(experts.down_proj) * std)
 
 
-def _svd_init_matrix(W, expert_dim, n_experts, k, svd_scale):
-    """Initialize expert matrices from a dense weight via SVD residual sampling.
+def _svd_perturb_chunk(W_chunk, k, svd_scale):
+    """Apply SVD-residual perturbation to a single weight chunk.
 
-    Decomposes W = U @ diag(S) @ Vt, keeps top-k singular values as the
-    shared structural component, and samples perturbed residuals per expert.
-
-    Args:
-        W: Dense weight matrix, shape ``(out_features, in_features)``,
-            e.g. ``(5504, 2048)`` for gate/up_proj.
-        expert_dim: Number of output rows per expert (1408).
-        n_experts: Total number of experts to initialize (60).
-        k: Number of top singular values to treat as structural.
-        svd_scale: Noise scale for residual perturbation.
-
-    Returns:
-        Tensor of shape ``(n_experts, expert_dim, in_features)``.
-    """
-    U, S, Vt = torch.linalg.svd(W.float(), full_matrices=False)
-    # U: (out, min(out,in)), S: (min(out,in),), Vt: (min(out,in), in)
-
-    rank = min(k, len(S), expert_dim)
-    S_struct = S[:rank]
-    U_struct = U[:, :rank]
-    Vt_struct = Vt[:rank, :]
-
-    S_res = S[rank:]
-    U_res = U[:, rank:]
-
-    result = torch.zeros(n_experts, expert_dim, W.shape[1], dtype=W.dtype)
-
-    for e in range(n_experts):
-        noise = torch.randn_like(S_res) * S_res * svd_scale
-        S_e = S_res + noise
-
-        W_struct = U_struct[:expert_dim, :] @ torch.diag(S_struct) @ Vt_struct
-        n_res = min(expert_dim, U_res.shape[1])
-        W_res = U_res[:expert_dim, :n_res] @ torch.diag(S_e[:n_res]) @ Vt[rank:rank + n_res, :]
-
-        result[e] = (W_struct + W_res).to(W.dtype)
-
-    return result
-
-
-def _svd_init_down_matrix(W, expert_dim, n_experts, k, svd_scale):
-    """Initialize expert down_proj matrices via SVD residual sampling.
-
-    Same approach as ``_svd_init_matrix`` but transposed for down_proj,
-    where the expert dimension is on the column axis rather than the row axis.
+    Decomposes W_chunk = U @ diag(S) @ Vt, keeps top-k singular values
+    unchanged (structural), and adds uniform additive noise to the remaining
+    residual singular values.
 
     Args:
-        W: Dense down_proj weight, shape ``(hidden, dense_dim)``.
-        expert_dim: Number of input columns per expert (1408).
-        n_experts: Total number of experts to initialize (60).
-        k: Number of top singular values to treat as structural.
-        svd_scale: Noise scale for residual perturbation.
+        W_chunk: Weight matrix chunk (e.g. 1408 x 2048 for gate/up,
+            or 2048 x 1408 for down_proj).
+        k: Number of top singular values to preserve as structural.
+        svd_scale: Noise scale relative to mean residual singular value
+            magnitude (mirrors how Gaussian uses sigma * mean(|W|)).
 
     Returns:
-        Tensor of shape ``(n_experts, hidden, expert_dim)``.
+        Perturbed weight chunk with same shape and dtype as input.
     """
-    U, S, Vt = torch.linalg.svd(W.float(), full_matrices=False)
-
-    rank = min(k, len(S), expert_dim)
-    S_struct = S[:rank]
-    U_struct = U[:, :rank]
-    Vt_struct = Vt[:rank, :]
+    U, S, Vt = torch.linalg.svd(W_chunk.float(), full_matrices=False)
+    rank = min(k, len(S))
 
     S_res = S[rank:]
-    Vt_res = Vt[rank:, :]
+    std = svd_scale * S_res.abs().mean()
+    S_perturbed = S_res + torch.randn_like(S_res) * std
 
-    result = torch.zeros(n_experts, W.shape[0], expert_dim, dtype=W.dtype)
-
-    for e in range(n_experts):
-        noise = torch.randn_like(S_res) * S_res * svd_scale
-        S_e = S_res + noise
-
-        W_struct = U_struct @ torch.diag(S_struct) @ Vt_struct[:, :expert_dim]
-        n_res = min(expert_dim, Vt_res.shape[0])
-        W_res = U[:, rank:rank + n_res] @ torch.diag(S_e[:n_res]) @ Vt_res[:n_res, :expert_dim]
-
-        result[e] = (W_struct + W_res).to(W.dtype)
-
-    return result
+    S_full = torch.cat([S[:rank], S_perturbed])
+    W_new = U @ torch.diag(S_full) @ Vt
+    return W_new.to(W_chunk.dtype)
 
 
 def init_svd(dense, moe, cfg, k=8, svd_scale=0.5):
-    """Initialize experts via SVD decomposition with residual sampling.
+    """Initialize experts via partition + SVD-residual perturbation.
 
-    For each dense FFN matrix, the top-k singular values form a shared
-    structural component, while the residual singular values are perturbed
-    independently per expert to create diversity.
+    Mirrors the partition-and-replicate structure of init_direct/init_gaussian:
+    splits the dense FFN into chunks, cycles experts across chunks, and applies
+    SVD-residual perturbation independently to each expert's chunk. This ensures
+    experts within the same partition group share the same structural component
+    but differ in their residual singular values.
 
     Args:
         dense: The dense source model.
         moe: The MoE target model.
-        cfg: Dict with keys ``n_layers``, ``n_experts``, ``expert_dim``.
+        cfg: Dict with keys ``n_layers``, ``n_experts``, ``expert_dim``,
+            ``dense_dim``.
         k: Number of top singular values to keep as structural.
             Defaults to 8.
-        svd_scale: Noise scale for residual perturbation. Defaults to 0.5.
+        svd_scale: Noise scale for residual perturbation (relative to mean
+            residual singular value magnitude). Defaults to 0.5.
     """
     n_layers = cfg["n_layers"]
     n_experts = cfg["n_experts"]
     expert_dim = cfg["expert_dim"]
+    dense_dim = cfg["dense_dim"]
+    n_chunks = math.ceil(dense_dim / expert_dim)
 
     for i in range(n_layers):
         print(f"  SVD init layer {i}/{n_layers}...")
         dl = dense.model.layers[i]
         experts = moe.model.layers[i].mlp.experts
 
-        gate_init = _svd_init_matrix(
-            dl.mlp.gate_proj.weight, expert_dim, n_experts, k, svd_scale)
-        up_init = _svd_init_matrix(
-            dl.mlp.up_proj.weight, expert_dim, n_experts, k, svd_scale)
-        down_init = _svd_init_down_matrix(
-            dl.mlp.down_proj.weight, expert_dim, n_experts, k, svd_scale)
+        gate_w = dl.mlp.gate_proj.weight
+        up_w = dl.mlp.up_proj.weight
+        down_w = dl.mlp.down_proj.weight
 
-        experts.gate_up_proj[:, :expert_dim, :].copy_(gate_init)
-        experts.gate_up_proj[:, expert_dim:, :].copy_(up_init)
-        experts.down_proj.copy_(down_init)
+        for e in range(n_experts):
+            chunk_idx = e % n_chunks
+            row_start = chunk_idx * expert_dim
+            row_end = min(row_start + expert_dim, dense_dim)
+            actual = row_end - row_start
+
+            gate_chunk = _svd_perturb_chunk(gate_w[row_start:row_end], k, svd_scale)
+            up_chunk = _svd_perturb_chunk(up_w[row_start:row_end], k, svd_scale)
+            down_chunk = _svd_perturb_chunk(down_w[:, row_start:row_end].T, k, svd_scale).T
+
+            experts.gate_up_proj[e, :actual].copy_(gate_chunk)
+            experts.gate_up_proj[e, expert_dim:expert_dim + actual].copy_(up_chunk)
+            experts.down_proj[e, :, :actual].copy_(down_chunk)
+
+            if actual < expert_dim:
+                experts.gate_up_proj[e, actual:expert_dim].zero_()
+                experts.gate_up_proj[e, expert_dim + actual:].zero_()
+                experts.down_proj[e, :, actual:].zero_()
 
 
 def upcycle(method, output_dir, sigma=0.1, k=8, svd_scale=0.5):

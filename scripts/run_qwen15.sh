@@ -2,15 +2,15 @@
 set -euo pipefail
 
 # Qwen1.5 experiment pipeline.
-# For each config: upcycle → train (step-0 metrics + 300 steps + GSM8K) → cleanup.
+# For each config: upcycle → train (step-0 metrics + 400 steps + GSM8K) → cleanup.
 # Everything is logged to wandb in a single run per config.
 #
 # Configs:
 #   1. direct                          (baseline)
-#   2. gaussian  sigma=0.1             (light random noise)
-#   3. gaussian  sigma=0.5             (heavy random noise)
-#   4. svd       k=128  svd_scale=0.1  (light structured perturbation)
-#   5. svd       k=128  svd_scale=0.5  (heavy structured perturbation)
+#   2. gaussian  sigma=0.5             (moderate random noise)
+#   3. gaussian  sigma=1.0             (heavy random noise)
+#   4. svd       k=512  svd_scale=0.1  (light structured perturbation)
+#   5. svd       k=512  svd_scale=0.5  (heavy structured perturbation)
 
 CKPT_DIR="/tmp/moe-checkpoints"
 RESULTS_DIR="results/qwen15"
@@ -20,10 +20,10 @@ mkdir -p "${RESULTS_DIR}"
 
 CONFIGS=(
     "direct|qwen-direct||"
-    "gaussian|qwen-gaussian-s0.1|--sigma 0.1|"
     "gaussian|qwen-gaussian-s0.5|--sigma 0.5|"
-    "svd|qwen-svd-k128-s0.1|--k 128 --svd-scale 0.1|"
-    "svd|qwen-svd-k128-s0.5|--k 128 --svd-scale 0.5|"
+    "gaussian|qwen-gaussian-s1.0|--sigma 1.0|"
+    "svd|qwen-svd-k512-s0.1|--k 512 --svd-scale 0.1|"
+    "svd|qwen-svd-k512-s0.5|--k 512 --svd-scale 0.5|"
 )
 
 echo "============================================"
@@ -44,7 +44,7 @@ for entry in "${CONFIGS[@]}"; do
     echo "[1/3] Upcycling (${method})..."
     python3 -m src.qwen15.upcycle --method "${method}" ${upcycle_args} --output "${model_dir}"
 
-    echo "[2/3] Training (step-0 + 300 steps + GSM8K)..."
+    echo "[2/3] Training (step-0 + 400 steps + GSM8K)..."
     python3 -m src.qwen15.train \
         --model "${model_dir}" \
         --run-name "${run_name}" \

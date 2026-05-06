@@ -92,9 +92,9 @@ def main():
     parser = argparse.ArgumentParser(description="Fine-tune upcycled MoE model")
     parser.add_argument("--model", required=True, help="Path to upcycled model")
     parser.add_argument("--run-name", default="moe-train", help="wandb run name")
-    parser.add_argument("--max-steps", type=int, default=300)
+    parser.add_argument("--max-steps", type=int, default=400)
     parser.add_argument("--batch-size", type=int, default=1)
-    parser.add_argument("--lr", type=float, default=1e-5)
+    parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument("--seq-len", type=int, default=2048)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output", default="/tmp/moe-checkpoints")
@@ -148,7 +148,7 @@ def main():
         learning_rate=args.lr,
         lr_scheduler_type="cosine",
         warmup_steps=30,
-        logging_steps=10,
+        logging_steps=1,
         save_strategy="no",
         eval_strategy="steps",
         eval_steps=50,
