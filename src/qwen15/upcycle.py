@@ -128,35 +128,28 @@ def init_random(dense, moe, cfg):
 
     for i in range(n_layers):
         std = 1
-        # Access the experts object directly as seen in your init_gaussian snippet
         experts = moe.model.layers[i].mlp.experts
         
         # Completely overwrite the fused weights with random values
-        # We use a standard deviation of 0.02, which is typical for Transformer initialization
         nn.init.normal_(experts.gate_up_proj, mean=0.0, std=std)
         nn.init.normal_(experts.down_proj, mean=0.0, std=std)
         # Assuming you are inside a loop over n_layers
         mlp = moe.model.layers[i].mlp
 
-        # List all attributes to see if 'gate' or 'shared_expert_gate' exist
         print(f"Attributes in Layer {i} MLP: {dir(mlp)}")
-        # Also randomize the router/gate for a true baseline
-        # In Qwen1.5 MoE, the gate is usually at moe.model.layers[i].mlp.gate
         if hasattr(moe.model.layers[i].mlp, 'gate'):
             nn.init.normal_(moe.model.layers[i].mlp.gate.weight, mean=0.0, std=std)
 
-        # 1. Reset Shared Expert weights
+        # Reset Shared Expert weights
         if hasattr(mlp, 'shared_expert'):
             nn.init.normal_(mlp.shared_expert.gate_proj.weight, std=std)
             nn.init.normal_(mlp.shared_expert.down_proj.weight, std=std)
 
-        # 2. Reset the weighting gate for shared experts
+        # Reset the weighting gate for shared experts
         if hasattr(mlp, 'shared_expert_gate'):
-            # If it's a single weighting scalar or a small linear layer
             if isinstance(mlp.shared_expert_gate, torch.nn.Parameter):
                 nn.init.normal_(mlp.shared_expert_gate, std=std)
             else:
-                # If it's a Linear layer
                 nn.init.normal_(mlp.shared_expert_gate.weight, std=std)
     print("Expert randomization complete.")
     
@@ -206,17 +199,12 @@ def _svd_init_matrix(W, expert_dim, n_experts, k, sigma_scale):
 
     rank = min(k, len(S))
 
-    # Split spectrum
     S_struct = S[:rank]
     S_res = S[rank:]
-
     U_struct = U[:, :rank]
     Vt_struct = Vt[:rank, :]
-
     U_res = U[:, rank:]
     Vt_res = Vt[rank:, :]
-
-    # Precompute shared structural component
     W_struct_full = U_struct @ torch.diag(S_struct) @ Vt_struct
 
     result = torch.zeros(n_experts, expert_dim, W.shape[1], dtype=W.dtype)
@@ -225,15 +213,11 @@ def _svd_init_matrix(W, expert_dim, n_experts, k, sigma_scale):
         if len(S_res) > 0:
             noise = torch.randn_like(S_res) * (sigma_scale * S_res)
             S_e = S_res + noise
-            # S_e = torch.zeros_like(S_res)
-
             W_res_full = U_res @ torch.diag(S_e) @ Vt_res
         else:
             W_res_full = 0.0
 
         W_full = W_struct_full + W_res_full
-
-        # slice AFTER reconstruction
         result[e] = W_full[:expert_dim, :].to(W.dtype)
 
     return result
@@ -261,13 +245,10 @@ def _svd_init_down_matrix(W, expert_dim, n_experts, k, sigma_scale):
 
     S_struct = S[:rank]
     S_res = S[rank:]
-
     U_struct = U[:, :rank]
     Vt_struct = Vt[:rank, :]
-
     U_res = U[:, rank:]
     Vt_res = Vt[rank:, :]
-
     W_struct_full = U_struct @ torch.diag(S_struct) @ Vt_struct
 
     result = torch.zeros(n_experts, W.shape[0], expert_dim, dtype=W.dtype)
@@ -276,15 +257,11 @@ def _svd_init_down_matrix(W, expert_dim, n_experts, k, sigma_scale):
         if len(S_res) > 0:
             noise = torch.randn_like(S_res) * (sigma_scale * S_res)
             S_e = S_res + noise
-            # S_e = torch.zeros_like(S_res)
-
             W_res_full = U_res @ torch.diag(S_e) @ Vt_res
         else:
             W_res_full = 0.0
 
         W_full = W_struct_full + W_res_full
-
-        # slice columns AFTER reconstruction
         result[e] = W_full[:, :expert_dim].to(W.dtype)
 
     return result
@@ -354,20 +331,7 @@ def upcycle(method, output_dir, sigma=0.01, k=256, sigma_scale=0.1):
     dense = AutoModelForCausalLM.from_pretrained(
         DENSE_MODEL, dtype=torch.bfloat16, device_map="cpu")
     tokenizer = AutoTokenizer.from_pretrained(DENSE_MODEL)
-
-    # print("Creating empty MoE model (bf16)...")
-    # prev = torch.get_default_dtype()
-    # torch.set_default_dtype(torch.bfloat16)
-    # moe = AutoModelForCausalLM.from_config(moe_cfg)
-    # torch.set_default_dtype(prev)
-
-    # cfg = dict(
-    #     n_layers=dense_cfg.num_hidden_layers,
-    #     n_experts=moe_cfg.num_experts,
-    #     expert_dim=moe_cfg.moe_intermediate_size,
-    #     dense_dim=dense_cfg.intermediate_size,
-    # )
-
+    
     CACHE_PATH = "/tmp/moe_cache.pt"  # or a Drive path
 
     if os.path.exists(CACHE_PATH):
