@@ -47,6 +47,27 @@ def extract_ground_truth(answer_text):
     return None
 
 
+FEW_SHOT_EXAMPLES = [
+    ("Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in May. How many clips did Natalia sell in total in April and May?",
+     "Natalia sold 48/2 = <<48/2=24>>24 clips in May.\nNatalia sold 48+24 = <<48+24=72>>72 clips altogether in April and May.\n#### 72"),
+    ("Weng earns $12 an hour for babysitting. Yesterday, she just did 50 minutes of babysitting. How much did she earn?",
+     "Weng earns 12/60 = $<<12/60=0.2>>0.2 per minute.\nWorking 50 minutes, she earned 0.2 x 50 = $<<0.2*50=10>>10.\n#### 10"),
+    ("Betty is saving money for a new wallet which costs $100. Betty has only half of the money she needs. Her parents decided to give her $15 for that purpose, and her grandparents twice as much as her parents. How much more money does Betty need to buy the wallet?",
+     "In the beginning, Betty has only 100 / 2 = $<<100/2=50>>50.\nBetty's grandparents gave her 15 * 2 = $<<15*2=30>>30.\nThis means, Betty needs 100 - 50 - 30 - 15 = $<<100-50-30-15=5>>5 more.\n#### 5"),
+    ("Julie is reading a 120-page book. Yesterday, she was able to read 12 pages and today, she read twice as many pages as yesterday. If she wants to read half of the remaining pages tomorrow, how many pages should she read?",
+     "Maila read 12 x 2 = <<12*2=24>>24 pages today.\nSo she was able to read a total of 12 + 24 = <<12+24=36>>36 pages since yesterday.\nThere are 120 - 36 = <<120-36=84>>84 pages left to be read.\nShe wants to read 84 / 2 = <<84/2=42>>42 pages tomorrow.\n#### 42"),
+]
+
+
+def build_prompt(question):
+    """Build a few-shot prompt with 4 exemplars followed by the target question."""
+    prompt = ""
+    for q, a in FEW_SHOT_EXAMPLES:
+        prompt += f"Problem: {q}\n\nSolution: {a}\n\n"
+    prompt += f"Problem: {question}\n\nSolution:"
+    return prompt
+
+
 def evaluate(model, tokenizer, dataset, max_new_tokens=512):
     """Run greedy generation on each problem and score accuracy.
 
@@ -68,9 +89,9 @@ def evaluate(model, tokenizer, dataset, max_new_tokens=512):
         if ground_truth is None:
             continue
 
-        prompt = f"Problem: {question}\n\nSolution:"
+        prompt = build_prompt(question)
         inputs = tokenizer(prompt, return_tensors="pt", truncation=True,
-                           max_length=1024).to(model.device)
+                           max_length=2048).to(model.device)
 
         with torch.no_grad():
             outputs = model.generate(

@@ -1,4 +1,4 @@
-"""Fine-tune an upcycled Qwen1.5-MoE model on OpenMathReasoning (cot split).
+"""Fine-tune an upcycled Qwen1.5-MoE model on GSM8K train split.
 
 Loads a model saved by ``src.qwen15.upcycle`` and trains only:
 - Routing expert FFN weights (gate_up_proj, down_proj) — full fine-tuning
@@ -19,13 +19,11 @@ import json
 import os
 
 import torch
-import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer, TrainerCallback
 from datasets import load_dataset
 from trl import SFTTrainer, SFTConfig
 
-DATASET = "nvidia/OpenMathReasoning"
-DATASET_SPLIT = "cot"
+DATASET = "openai/gsm8k"
 
 
 class ExpertDivergenceCallback(TrainerCallback):
@@ -85,7 +83,7 @@ class ExpertDivergenceCallback(TrainerCallback):
 
 def format_sample(sample):
     """Format a dataset sample as a single training string."""
-    return {"text": f"Problem: {sample['problem']}\n\nSolution: {sample['generated_solution']}"}
+    return {"text": f"Problem: {sample['question']}\n\nSolution: {sample['answer']}"}
 
 
 def main():
@@ -128,13 +126,9 @@ def main():
     divergence_callback = ExpertDivergenceCallback(model)
 
     print("Loading dataset...")
-    ds = load_dataset(DATASET, split=DATASET_SPLIT, streaming=True)
-    ds = ds.shuffle(seed=args.seed, buffer_size=10_000)
+    ds = load_dataset(DATASET, "main", split="train")
+    ds = ds.shuffle(seed=args.seed)
     ds = ds.map(format_sample)
-
-    print("Loading eval dataset (GSM8K train split)...")
-    eval_ds = load_dataset("openai/gsm8k", "main", split="train")
-    eval_ds = eval_ds.map(lambda s: {"text": f"Problem: {s['question']}\n\nSolution: {s['answer']}"})
 
     report_to = "none" if args.no_wandb else "wandb"
 
@@ -143,15 +137,13 @@ def main():
         run_name=args.run_name,
         max_steps=args.max_steps,
         per_device_train_batch_size=args.batch_size,
-        per_device_eval_batch_size=1,
         gradient_accumulation_steps=4,
         learning_rate=args.lr,
         lr_scheduler_type="cosine",
         warmup_steps=30,
         logging_steps=1,
         save_strategy="no",
-        eval_strategy="steps",
-        eval_steps=50,
+        eval_strategy="no",
         seed=args.seed,
         optim="paged_adamw_8bit",
         bf16=torch.cuda.is_bf16_supported(),
@@ -167,7 +159,6 @@ def main():
         model=model,
         processing_class=tokenizer,
         train_dataset=ds,
-        eval_dataset=eval_ds,
         args=training_args,
         callbacks=[divergence_callback],
     )
