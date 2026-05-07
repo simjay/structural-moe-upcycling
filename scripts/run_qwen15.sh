@@ -36,7 +36,7 @@ echo ""
 echo "--------------------------------------------"
 echo " Dense baseline (no upcycling, eval only)"
 echo "--------------------------------------------"
-python3 -m src.eval.gsm8k --model Qwen/Qwen1.5-1.8B --max-samples 1319
+python3 -m src.eval.gsm8k --model Qwen/Qwen1.5-1.8B --max-samples 1319 --run-name qwen-dense-baseline
 
 echo ""
 for entry in "${CONFIGS[@]}"; do

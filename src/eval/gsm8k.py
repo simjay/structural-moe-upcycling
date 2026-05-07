@@ -119,11 +119,17 @@ def evaluate(model, tokenizer, dataset, max_new_tokens=512):
 def main():
     parser = argparse.ArgumentParser(description="Evaluate MoE model on GSM8K")
     parser.add_argument("--model", required=True, help="Path to model checkpoint")
+    parser.add_argument("--run-name", default=None,
+                        help="wandb run name (enables wandb logging)")
     parser.add_argument("--max-samples", type=int, default=200,
                         help="Max problems to evaluate (default 200 for speed)")
     parser.add_argument("--max-new-tokens", type=int, default=512,
                         help="Max tokens to generate per problem")
     args = parser.parse_args()
+
+    if args.run_name:
+        import wandb
+        wandb.init(project="moe-upcycling", name=args.run_name)
 
     print(f"=== GSM8K Evaluation ===\n")
     print(f"Model: {args.model}")
@@ -149,6 +155,12 @@ def main():
     print(f"\n{'='*40}")
     print(f"GSM8K Accuracy: {correct}/{total} = {100*accuracy:.1f}%")
     print(f"{'='*40}")
+
+    if args.run_name:
+        import wandb
+        if wandb.run is not None:
+            wandb.log({"gsm8k/accuracy": accuracy, "gsm8k/correct": correct, "gsm8k/total": total})
+            wandb.finish()
 
 
 if __name__ == "__main__":
