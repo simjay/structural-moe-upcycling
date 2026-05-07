@@ -3,8 +3,10 @@ set -euo pipefail
 
 # Qwen1.5 experiment pipeline.
 # Step 0: Evaluate the dense model (no upcycling) as a reference baseline.
-# Then for each config: upcycle → train (step-0 metrics + 400 steps + GSM8K) → cleanup.
-# Everything is logged to wandb in a single run per config.
+# Then for each config: upcycle → train (step-0 metrics + 2000 steps + GSM8K) → cleanup.
+# Everything is logged to wandb project "qwen1.5" in a single run per config.
+
+export WANDB_PROJECT="qwen1.5"
 #
 # Configs:
 #   0. dense baseline                   (no upcycling, eval only)
@@ -53,7 +55,7 @@ for entry in "${CONFIGS[@]}"; do
     echo "[1/3] Upcycling (${method})..."
     python3 -m src.qwen15.upcycle --method "${method}" ${upcycle_args} --output "${model_dir}"
 
-    echo "[2/3] Training (step-0 + 400 steps + GSM8K)..."
+    echo "[2/3] Training (step-0 + 2000 steps + GSM8K)..."
     python3 -m src.qwen15.train \
         --model "${model_dir}" \
         --run-name "${run_name}" \

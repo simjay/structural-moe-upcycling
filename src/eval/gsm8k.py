@@ -128,8 +128,9 @@ def main():
     args = parser.parse_args()
 
     if args.run_name:
+        import os
         import wandb
-        wandb.init(project="huggingface", name=args.run_name)
+        wandb.init(project=os.environ.get("WANDB_PROJECT", "huggingface"), name=args.run_name)
 
     print(f"=== GSM8K Evaluation ===\n")
     print(f"Model: {args.model}")
