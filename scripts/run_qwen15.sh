@@ -2,10 +2,12 @@
 set -euo pipefail
 
 # Qwen1.5 experiment pipeline.
-# For each config: upcycle → train (step-0 metrics + 400 steps + GSM8K) → cleanup.
+# Step 0: Evaluate the dense model (no upcycling) as a reference baseline.
+# Then for each config: upcycle → train (step-0 metrics + 400 steps + GSM8K) → cleanup.
 # Everything is logged to wandb in a single run per config.
 #
 # Configs:
+#   0. dense baseline                   (no upcycling, eval only)
 #   1. direct                          (baseline)
 #   2. gaussian  sigma=0.5             (moderate random noise)
 #   3. gaussian  sigma=1.0             (heavy random noise)
@@ -27,9 +29,16 @@ CONFIGS=(
 )
 
 echo "============================================"
-echo " Qwen1.5 Experiment (5 configs)"
+echo " Qwen1.5 Experiment (5 configs + dense baseline)"
 echo "============================================"
 
+echo ""
+echo "--------------------------------------------"
+echo " Dense baseline (no upcycling, eval only)"
+echo "--------------------------------------------"
+python3 -m src.eval.gsm8k --model Qwen/Qwen1.5-1.8B --max-samples 1319
+
+echo ""
 for entry in "${CONFIGS[@]}"; do
     IFS='|' read -r method run_name upcycle_args _ <<< "${entry}"
 
