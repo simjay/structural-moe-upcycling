@@ -129,7 +129,7 @@ def main():
 
     if args.run_name:
         import wandb
-        wandb.init(project="moe-upcycling", name=args.run_name)
+        wandb.init(project="huggingface", name=args.run_name)
 
     print(f"=== GSM8K Evaluation ===\n")
     print(f"Model: {args.model}")
