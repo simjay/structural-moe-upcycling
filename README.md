@@ -1,4 +1,4 @@
-# structural-moe-upcycling
+# Structural MoE Upcycling
 
 [[paper]](resource/report.pdf) [[poster]](resource/poster.pdf)
 
