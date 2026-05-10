@@ -127,13 +127,3 @@ structural-moe-upcycling/
 ├── pyproject.toml
 └── README.md
 ```
-
-## Citation
-
-```bibtex
-@article{soeun2026structure,
-  title={Structure-Preserving Residual Initialization for Dense-to-MoE Upcycling},
-  author={Soeun, Visal and Sim, Jaehyun and Min, Kevin},
-  year={2026}
-}
-```
