@@ -205,6 +205,14 @@ def _svd_init_matrix(W, expert_dim, n_experts, k, sigma_scale):
     Vt_struct = Vt[:rank, :]
     U_res = U[:, rank:]
     Vt_res = Vt[rank:, :]
+    # S_struct = S[-rank:]
+    # S_res = S[:-rank]
+    
+    # U_struct = U[:, -rank:]
+    # Vt_struct = Vt[-rank:, :]
+    
+    # U_res = U[:, :-rank]
+    # Vt_res = Vt[:-rank, :]
     W_struct_full = U_struct @ torch.diag(S_struct) @ Vt_struct
 
     result = torch.zeros(n_experts, expert_dim, W.shape[1], dtype=W.dtype)
@@ -249,6 +257,14 @@ def _svd_init_down_matrix(W, expert_dim, n_experts, k, sigma_scale):
     Vt_struct = Vt[:rank, :]
     U_res = U[:, rank:]
     Vt_res = Vt[rank:, :]
+    # S_struct = S[-rank:]
+    # S_res = S[:-rank]
+    
+    # U_struct = U[:, -rank:]
+    # Vt_struct = Vt[-rank:, :]
+    
+    # U_res = U[:, :-rank]
+    # Vt_res = Vt[:-rank, :]
     W_struct_full = U_struct @ torch.diag(S_struct) @ Vt_struct
 
     result = torch.zeros(n_experts, W.shape[0], expert_dim, dtype=W.dtype)

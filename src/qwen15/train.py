@@ -182,6 +182,15 @@ def main():
 
     ds = load_dataset(DATASET, split=DATASET_SPLIT, streaming=True)
     ds = ds.shuffle(seed=args.dataset_seed, buffer_size=1000).map(format_sample)
+    EVAL_SAMPLES = 200 
+    
+    eval_ds = ds.take(EVAL_SAMPLES)
+    train_ds = ds.skip(EVAL_SAMPLES)
+
+    if hasattr(train_ds, "_ex_iterable"):
+        train_ds._ex_iterable.batch_size = 1000
+    if hasattr(eval_ds, "_ex_iterable"):
+        eval_ds._ex_iterable.batch_size = 1000
 
     training_args = SFTConfig(
         # output_dir=f"{args.output}/{args.run_name}",
@@ -201,12 +210,14 @@ def main():
         report_to="none" if args.no_wandb else "wandb",
         dataset_text_field="text",
         max_length=args.seq_len,
+        eval_strategy="no",
     )
 
     trainer = SFTTrainer(
         model=model,
         processing_class=tokenizer,
-        train_dataset=ds,
+        train_dataset=train_ds,
+        eval_dataset=eval_ds,
         args=training_args,
         callbacks=[
             ExpertCallback(tracker, model, every_n_steps=10),
@@ -215,6 +226,8 @@ def main():
 
     trainer.train()
     # trainer.save_model(f"{args.output}/{args.run_name}/final")
+
+    metrics = trainer.evaluate()
 
 if __name__ == "__main__":
     main()
